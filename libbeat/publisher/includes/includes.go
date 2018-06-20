@@ -19,6 +19,7 @@ package includes
 
 import (
 	// import queue types
+	_ "github.com/elastic/beats/libbeat/outputs/amqp"
 	_ "github.com/elastic/beats/libbeat/outputs/codec/format"
 	_ "github.com/elastic/beats/libbeat/outputs/codec/json"
 	_ "github.com/elastic/beats/libbeat/outputs/console"
