@@ -32,17 +32,30 @@ func makeAMQP(
 
 	// TODO: real values
 	retry := 0
-	batchSize := 1
 
 	codec, err := codec.CreateEncoder(beat, config.Codec)
 	if err != nil {
 		return outputs.Fail(err)
 	}
 
-	client, err := newAMQPClient(observer, config.DialURL, config.ExchangeName, config.ExchangeKind, config.ExchangeDurable, config.ExchangeAutoDelete, codec)
+	client, err := newAMQPClient(
+		observer,
+		beat,
+		codec,
+		config.DialURL,
+		config.ExchangeName,
+		config.ExchangeKind,
+		config.ExchangeDurable,
+		config.ExchangeAutoDelete,
+		config.RoutingKey,
+		config.ContentType,
+		config.MandatoryPublish,
+		config.ImmediatePublish,
+	)
+
 	if err != nil {
 		return outputs.Fail(err)
 	}
 
-	return outputs.Success(batchSize, retry, client)
+	return outputs.Success(config.BulkMaxSize, retry, client)
 }
