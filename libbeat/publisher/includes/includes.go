@@ -23,6 +23,7 @@ import (
 	_ "github.com/elastic/beats/libbeat/publisher/queue/spool"
 
 	// load supported output plugins
+	_ "github.com/elastic/beats/libbeat/outputs/amqp"
 	_ "github.com/elastic/beats/libbeat/outputs/console"
 	_ "github.com/elastic/beats/libbeat/outputs/elasticsearch"
 	_ "github.com/elastic/beats/libbeat/outputs/fileout"
