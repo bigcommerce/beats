@@ -1,45 +1,64 @@
 package amqp
 
 import (
+	"fmt"
 	"time"
 
 	libamqp "github.com/streadway/amqp"
 
+	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/outputs"
 	"github.com/elastic/beats/libbeat/outputs/codec"
 	"github.com/elastic/beats/libbeat/publisher"
+	"github.com/elastic/beats/libbeat/testing"
 )
 
 func newAMQPClient(
 	observer outputs.Observer,
+	beat beat.Info,
+	writer codec.Codec,
 	dialURL string,
 	exchangeName string,
 	exchangeKind string,
 	exchangeDurable bool,
 	exchangeAutoDelete bool,
-	writer codec.Codec,
+	routingKey string,
+	contentType string,
+	mandatoryPublish bool,
+	immediatePublish bool,
 ) (*client, error) {
 	c := &client{
 		observer:           observer,
+		beat:               beat,
 		dialURL:            dialURL,
 		exchangeName:       exchangeName,
 		exchangeKind:       exchangeKind,
 		exchangeDurable:    exchangeDurable,
 		exchangeAutoDelete: exchangeAutoDelete,
+		routingKey:         routingKey,
+		contentType:        contentType,
+		mandatoryPublish:   mandatoryPublish,
+		immediatePublish:   immediatePublish,
 		codec:              writer,
 	}
 	return c, nil
 }
 
 type client struct {
-	observer           outputs.Observer
+	observer outputs.Observer
+	beat     beat.Info
+	codec    codec.Codec
+
 	dialURL            string
 	exchangeName       string
 	exchangeKind       string
 	exchangeDurable    bool
 	exchangeAutoDelete bool
-	codec              codec.Codec
+	routingKey         string
+	contentType        string
+	mandatoryPublish   bool
+	immediatePublish   bool
 
 	connection *libamqp.Connection
 	channel    *libamqp.Channel
@@ -78,6 +97,15 @@ func (c *client) Connect() error {
 	return nil
 }
 
+func (c *client) Test(d testing.Driver) {
+	d.Run("amqp: "+c.dialURL, func(d testing.Driver) {
+		d.Fatal("connect", c.Connect())
+		defer c.Close()
+
+		d.Info("server version", fmt.Sprintf("%d.%d", c.connection.Major, c.connection.Minor))
+	})
+}
+
 func (c *client) Close() error {
 	debugf("close: %v", c.dialURL)
 
@@ -110,21 +138,32 @@ func (c *client) Publish(batch publisher.Batch) error {
 	events := batch.Events()
 	c.observer.NewBatch(len(events))
 
-	for range events {
-		exchange := ""
-		key := ""
-		mandatory := true
-		immediate := true
-		contentType := "text/plain"
+	for i := range events {
+		event := &events[i]
 
-		msg := libamqp.Publishing{
-			DeliveryMode: libamqp.Persistent,
-			Timestamp:    time.Now(),
-			ContentType:  contentType,
-			Body:         []byte("foo"),
+		serializedEvent, err := c.codec.Encode(c.beat.Beat, &event.Content)
+		if err != nil {
+			if event.Guaranteed() {
+				logp.Critical("Failed to serialize the event: %v", err)
+			} else {
+				logp.Warn("Failed to serialize the event: %v", err)
+			}
+
+			c.observer.Dropped(1)
+			continue
 		}
 
-		c.channel.Publish(exchange, key, mandatory, immediate, msg)
+		buf := make([]byte, len(serializedEvent))
+		copy(buf, serializedEvent)
+
+		msg := libamqp.Publishing{
+			DeliveryMode: libamqp.Persistent, // TODO: does this need to be configurable?
+			Timestamp:    time.Now(),
+			ContentType:  c.contentType,
+			Body:         buf,
+		}
+
+		c.channel.Publish(c.exchangeName, c.routingKey, c.mandatoryPublish, c.immediatePublish, msg)
 	}
 
 	return nil
