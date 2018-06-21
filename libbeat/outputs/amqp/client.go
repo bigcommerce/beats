@@ -144,9 +144,9 @@ func (c *client) Publish(batch publisher.Batch) error {
 		serializedEvent, err := c.codec.Encode(c.beat.Beat, &event.Content)
 		if err != nil {
 			if event.Guaranteed() {
-				logp.Critical("Failed to serialize the event: %v", err)
+				logp.Critical("Failed to serialize event: %v", err)
 			} else {
-				logp.Warn("Failed to serialize the event: %v", err)
+				logp.Warn("Failed to serialize event: %v", err)
 			}
 
 			c.observer.Dropped(1)
@@ -163,7 +163,19 @@ func (c *client) Publish(batch publisher.Batch) error {
 			Body:         buf,
 		}
 
-		c.channel.Publish(c.exchangeName, c.routingKey, c.mandatoryPublish, c.immediatePublish, msg)
+		debugf("publish")
+
+		err = c.channel.Publish(c.exchangeName, c.routingKey, c.mandatoryPublish, c.immediatePublish, msg)
+		if err != nil {
+			if event.Guaranteed() {
+				logp.Critical("Failed to publish event: %v", err)
+			} else {
+				logp.Warn("Failed to publish event: %v", err)
+			}
+
+			c.observer.Dropped(1)
+			continue
+		}
 	}
 
 	return nil
