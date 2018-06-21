@@ -65,7 +65,7 @@ type client struct {
 }
 
 func (c *client) Connect() error {
-	debugf("connect: %v", c.dialURL)
+	debugf("connect")
 	connection, err := libamqp.Dial(c.dialURL)
 	if err != nil {
 		logp.Err("AMQP connection error: %v", err)
@@ -107,7 +107,7 @@ func (c *client) Test(d testing.Driver) {
 }
 
 func (c *client) Close() error {
-	debugf("close: %v", c.dialURL)
+	debugf("close")
 
 	if c.channel != nil {
 		err := c.channel.Close()
@@ -133,7 +133,7 @@ func (c *client) Close() error {
 }
 
 func (c *client) Publish(batch publisher.Batch) error {
-	debugf("publish: %v", c.dialURL)
+	debugf("publish batch")
 
 	events := batch.Events()
 	c.observer.NewBatch(len(events))
