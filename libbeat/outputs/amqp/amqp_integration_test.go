@@ -46,15 +46,17 @@ func TestAMQPPublish(t *testing.T) {
 	testBinding := fmt.Sprintf("test-libbeat-%s", id)
 
 	tests := []struct {
-		title    string
-		config   map[string]interface{}
-		exchange string
-		events   []eventInfo
+		title      string
+		config     map[string]interface{}
+		exchange   string
+		routingKey string
+		events     []eventInfo
 	}{
 		{
 			"single event",
 			nil,
 			testExchange,
+			testRoutingKey,
 			single(common.MapStr{
 				"message": id,
 			}),
@@ -65,8 +67,21 @@ func TestAMQPPublish(t *testing.T) {
 				"exchange": "%{[foo]}",
 			},
 			testExchange + "-select",
+			testRoutingKey,
 			single(common.MapStr{
 				"foo":     testExchange + "-select",
+				"message": id,
+			}),
+		},
+		{
+			"single event to selected routing key",
+			map[string]interface{}{
+				"routing_key": "%{[foo]}",
+			},
+			testExchange,
+			testRoutingKey + "-select",
+			single(common.MapStr{
+				"foo":     testRoutingKey + "-select",
 				"message": id,
 			}),
 		},
@@ -118,7 +133,7 @@ func TestAMQPPublish(t *testing.T) {
 				testBinding,
 				testQueue,
 				testConsumer,
-				testRoutingKey,
+				test.routingKey,
 			)
 
 			defer closeIfNotNil(t, "consume: connection close:", consumerConnection)
