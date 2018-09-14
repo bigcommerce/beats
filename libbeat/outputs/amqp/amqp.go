@@ -1,6 +1,8 @@
 package amqp
 
 import (
+	"fmt"
+
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
@@ -8,13 +10,6 @@ import (
 	"github.com/elastic/beats/libbeat/outputs/codec"
 	"github.com/elastic/beats/libbeat/outputs/outil"
 )
-
-type amqp struct {
-	config amqpConfig
-	topic  outil.Selector
-}
-
-var debugf = logp.MakeDebug("amqp")
 
 func init() {
 	outputs.RegisterType("amqp", makeAMQP)
@@ -25,37 +20,69 @@ func makeAMQP(
 	observer outputs.Observer,
 	cfg *common.Config,
 ) (outputs.Group, error) {
-	config := amqpConfig{}
+	logger := logp.NewLogger("amqp")
+	logger.Debugf("initialize amqp output")
+
+	config := defaultConfig()
 	if err := cfg.Unpack(&config); err != nil {
-		return outputs.Fail(err)
+		return outputs.Fail(fmt.Errorf("config: %v", err))
+	}
+
+	exchangeSelector, err := outil.BuildSelectorFromConfig(cfg, outil.Settings{
+		Key:              "exchange",
+		MultiKey:         "exchanges",
+		EnableSingleOnly: true,
+		FailEmpty:        true,
+	})
+	if err != nil {
+		return outputs.Fail(fmt.Errorf("exchange: %v", err))
+	}
+
+	routingKeySelector, err := outil.BuildSelectorFromConfig(cfg, outil.Settings{
+		Key:              "routing_key",
+		MultiKey:         "routing_keys",
+		EnableSingleOnly: true,
+		FailEmpty:        true,
+	})
+	if err != nil {
+		return outputs.Fail(fmt.Errorf("routing key: %v", err))
 	}
 
 	// TODO: real values
 	retry := 0
 
-	codec, err := codec.CreateEncoder(beat, config.Codec)
+	hosts, err := outputs.ReadHostList(cfg)
 	if err != nil {
-		return outputs.Fail(err)
+		return outputs.Fail(fmt.Errorf("host list: %v", err))
 	}
 
-	client, err := newAMQPClient(
-		observer,
-		beat,
-		codec,
-		config.DialURL,
-		config.ExchangeName,
-		config.ExchangeKind,
-		config.ExchangeDurable,
-		config.ExchangeAutoDelete,
-		config.RoutingKey,
-		config.ContentType,
-		config.MandatoryPublish,
-		config.ImmediatePublish,
-	)
+	clients := make([]outputs.NetworkClient, len(hosts))
+	for i, host := range hosts {
+		encoder, err := codec.CreateEncoder(beat, config.Codec)
+		if err != nil {
+			return outputs.Fail(fmt.Errorf("encoder: %v", err))
+		}
 
-	if err != nil {
-		return outputs.Fail(err)
+		client, err := newAMQPClient(
+			observer,
+			beat,
+			encoder,
+			host,
+			exchangeSelector,
+			config.ExchangeDeclare,
+			routingKeySelector,
+			config.PersistentDeliveryMode,
+			config.ContentType,
+			config.MandatoryPublish,
+			config.ImmediatePublish,
+		)
+
+		if err != nil {
+			return outputs.Fail(fmt.Errorf("client: %v", err))
+		}
+
+		clients[i] = client
 	}
 
-	return outputs.Success(config.BulkMaxSize, retry, client)
+	return outputs.SuccessNet(false, config.BulkMaxSize, retry, clients)
 }
