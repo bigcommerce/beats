@@ -1,10 +1,14 @@
 package amqp
 
 import (
-	"sync/atomic"
+	"errors"
 
 	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/streadway/amqp"
+)
+
+var (
+	ErrNack = errors.New("NACK received from AMQP")
 )
 
 type empty struct{}
@@ -15,14 +19,9 @@ type preparedEvent struct {
 	publishing   amqp.Publishing
 }
 
-type batchTracker struct {
-	batch   *publisher.Batch
-	counter uint64
-}
-
-func (b *batchTracker) dec() uint64 {
-	// to decrement x, do AddUint64(&x, ^uint64(0)) - stdlib atomic docs
-	return atomic.AddUint64(&b.counter, ^uint64(0))
+type pendingPublish struct {
+	event        *publisher.Event
+	batchTracker *batchTracker
 }
 
 // getDeliveryMode returns an amqp Delivery Mode value based on a boolean-style
