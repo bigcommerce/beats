@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nu7hatch/gouuid"
+
 	"github.com/streadway/amqp"
 
 	"github.com/elastic/beats/libbeat/beat"
@@ -30,20 +32,23 @@ type client struct {
 	immediatePublish     bool
 	mandatoryPublish     bool
 	routingKeySelector   outil.Selector
+	redactedURL          string
 
-	channel               *amqp.Channel
-	closeWaitGroup        sync.WaitGroup
-	connection            *amqp.Connection
+	channel        *amqp.Channel
+	closeWaitGroup sync.WaitGroup
+	connection     *amqp.Connection
+
 	declaredExchanges     map[string]empty
 	declaredExchangesLock sync.RWMutex
-	pendingConfirms       map[uint64]*batchTracker
-	pendingConfirmsLock   sync.Mutex
-	publishCounter        uint64
-	publishCounterLock    sync.Mutex
-	redactedURL           string
+
+	pendingPublishes     map[uint64]*pendingPublish
+	pendingPublishesLock sync.Mutex
+
+	publishCounter     uint64
+	publishCounterLock sync.Mutex
 }
 
-func newAMQPClient(
+func newClient(
 	observer outputs.Observer,
 	beat beat.Info,
 	writer codec.Codec,
@@ -57,7 +62,7 @@ func newAMQPClient(
 	immediatePublish bool,
 ) (*client, error) {
 	logger := logp.NewLogger("amqp")
-	logger.Debugf("newAMQPClient")
+	logger.Debugf("newClient")
 
 	c := &client{
 		observer:             observer,
@@ -73,15 +78,15 @@ func newAMQPClient(
 		writer:               writer,
 
 		declaredExchanges: map[string]empty{},
-		pendingConfirms:   map[uint64]*batchTracker{},
+		pendingPublishes:  map[uint64]*pendingPublish{},
 	}
 
 	// redact password from dial URL for logging
 	parsedURI, err := amqp.ParseURI(dialURL)
 	if err != nil {
-		logger.Errorf("Failed to parse dial URL: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("parse dial URL: %v", err)
 	}
+
 	parsedURI.Password = ""
 	c.redactedURL = parsedURI.String()
 	c.logger = logger.With("dial_url", c.redactedURL)
@@ -112,7 +117,10 @@ func (c *client) Connect() error {
 		return fmt.Errorf("channel create: %v", err)
 	}
 
-	c.publishCounter = 0
+	// TODO: if client instances can be reused, data like declared exchanges
+	// and pending-publish trackers should be reset here, perhaps refactoring
+	// newClient to make that part reusable
+
 	confirmations := make(chan amqp.Confirmation)
 	c.closeWaitGroup.Add(1)
 	go c.consumeConfirmations(confirmations)
@@ -121,13 +129,22 @@ func (c *client) Connect() error {
 	err = channel.Confirm(false)
 	if err != nil {
 		close(confirmations)
-		return fmt.Errorf("AMQP Confirm mode error: %v", err)
+		return fmt.Errorf("AMQP confirm mode: %v", err)
 	}
 
-	c.logger.Debugf("confirm enabled, subscribing to confirmations")
+	c.logger.Debugf("subscribe to publish confirmations")
 	channel.NotifyPublish(confirmations)
+
+	returns := make(chan amqp.Return)
+	c.closeWaitGroup.Add(1)
+	go c.consumeReturns(returns)
+
+	c.logger.Debugf("subscribe to publish returns")
+	channel.NotifyReturn(returns)
+
 	c.connection = connection
 	c.channel = channel
+
 	return nil
 }
 
@@ -143,7 +160,9 @@ func (c *client) Test(d testing.Driver) {
 	})
 }
 
-// Close terminates and cleans up this output.
+// Close terminates this output and blocks until child routines are finished.
+// A single, combined error is returned if any Closable sub-resource returns an
+// error.
 func (c *client) Close() error {
 	var channelErr, connectionErr error
 
@@ -182,7 +201,9 @@ func (c *client) Publish(batch publisher.Batch) error {
 
 	tracker := &batchTracker{
 		batch:   &batch,
+		client:  c,
 		counter: uint64(batchSize),
+		total:   uint64(batchSize),
 	}
 
 	c.observer.NewBatch(batchSize)
@@ -193,8 +214,9 @@ func (c *client) Publish(batch publisher.Batch) error {
 
 		preparedEvent, err := c.prepareEvent(event)
 		if err != nil {
+			c.logger.Errorf("dropping due to error: %v", err)
 			c.observer.Dropped(1)
-			tracker.dec()
+			tracker.fail(event, err)
 			continue
 		}
 
@@ -202,7 +224,8 @@ func (c *client) Publish(batch publisher.Batch) error {
 		c.publishCounterLock.Lock()
 		err = c.channel.Publish(preparedEvent.exchangeName, preparedEvent.routingKey, c.mandatoryPublish, c.immediatePublish, preparedEvent.publishing)
 		if err != nil {
-			c.observer.Dropped(1)
+			c.observer.Failed(1)
+			tracker.fail(event, err)
 
 			if event.Guaranteed() {
 				c.logger.Errorf("publish error: %v", err)
@@ -212,9 +235,12 @@ func (c *client) Publish(batch publisher.Batch) error {
 		} else {
 			c.logger.Debugf("event published")
 			c.publishCounter++
-			c.pendingConfirmsLock.Lock()
-			c.pendingConfirms[c.publishCounter] = tracker
-			c.pendingConfirmsLock.Unlock()
+			c.pendingPublishesLock.Lock()
+			c.pendingPublishes[c.publishCounter] = &pendingPublish{
+				batchTracker: tracker,
+				event:        event,
+			}
+			c.pendingPublishesLock.Unlock()
 		}
 		c.publishCounterLock.Unlock()
 	}
@@ -229,26 +255,38 @@ func (c *client) dial() (*amqp.Connection, error) {
 	return amqp.Dial(c.dialURL)
 }
 
+func (c *client) consumeReturns(returns <-chan amqp.Return) {
+	defer c.closeWaitGroup.Done()
+	defer c.logger.Debugf("return handling routine finished")
+	c.logger.Debugf("starting return handling routine")
+
+	for ret := range returns {
+		c.logger.Debugf("return received: %#v", ret) // TODO: check what to log here
+		// TODO: handle returns
+	}
+}
+
 func (c *client) consumeConfirmations(confirmations <-chan amqp.Confirmation) {
 	defer c.closeWaitGroup.Done()
-	defer c.logger.Debugf("publish-confirmation routine finished")
-	c.logger.Debugf("starting publish-confirmation routine")
+	defer c.logger.Debugf("confirmation handling routine finished")
+	c.logger.Debugf("starting confirmation handling routine")
 
 	for confirmation := range confirmations {
 		c.logger.Debugf("confirmation received, delivery tag: %v, ack: %v", confirmation.DeliveryTag, confirmation.Ack)
 
-		c.pendingConfirmsLock.Lock()
-		pending, ok := c.pendingConfirms[confirmation.DeliveryTag]
+		c.pendingPublishesLock.Lock()
+		pending, ok := c.pendingPublishes[confirmation.DeliveryTag]
 		if ok {
-			delete(c.pendingConfirms, confirmation.DeliveryTag)
-			c.pendingConfirmsLock.Unlock()
-			if pending.dec() == 0 {
-				// TODO: need to handle Nacks and other issues
-				c.logger.Debugf("batch complete, ACKing")
-				(*pending.batch).ACK()
+			delete(c.pendingPublishes, confirmation.DeliveryTag)
+			c.pendingPublishesLock.Unlock()
+
+			if confirmation.Ack {
+				pending.batchTracker.dec()
+			} else {
+				pending.batchTracker.fail(pending.event, ErrNack)
 			}
 		} else {
-			c.pendingConfirmsLock.Unlock()
+			c.pendingPublishesLock.Unlock()
 			c.logger.Warnf("received unexpected confirmation delivery tag: %v", confirmation.DeliveryTag)
 		}
 	}
@@ -274,18 +312,24 @@ func (c *client) prepareEvent(event *publisher.Event) (*preparedEvent, error) {
 
 	serializedEvent, err := c.writer.Encode(c.beat.Beat, &event.Content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to serialize event: %v", err)
+		return nil, fmt.Errorf("serialize: %v", err)
 	}
 	c.logger.Debugf("event serialized, len: %v", len(serializedEvent))
 
 	buf := make([]byte, len(serializedEvent))
 	copy(buf, serializedEvent)
 
+	messageId, err := uuid.NewV4()
+	if err != nil {
+		return nil, fmt.Errorf("uuid: %v", err)
+	}
+
 	msg := amqp.Publishing{
 		DeliveryMode: c.deliveryMode,
 		Timestamp:    time.Now(),
 		ContentType:  c.contentType,
 		Body:         buf,
+		MessageId:    messageId.String(),
 	}
 
 	return &preparedEvent{

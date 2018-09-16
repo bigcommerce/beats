@@ -63,7 +63,7 @@ func makeAMQP(
 			return outputs.Fail(fmt.Errorf("encoder: %v", err))
 		}
 
-		client, err := newAMQPClient(
+		client, err := newClient(
 			observer,
 			beat,
 			encoder,
