@@ -7,7 +7,6 @@ import (
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/outputs"
-	"github.com/elastic/beats/libbeat/outputs/codec"
 	"github.com/elastic/beats/libbeat/outputs/outil"
 )
 
@@ -58,15 +57,10 @@ func makeAMQP(
 
 	clients := make([]outputs.NetworkClient, len(hosts))
 	for i, host := range hosts {
-		encoder, err := codec.CreateEncoder(beat, config.Codec)
-		if err != nil {
-			return outputs.Fail(fmt.Errorf("encoder: %v", err))
-		}
-
 		client, err := newClient(
 			observer,
 			beat,
-			encoder,
+			config.Codec,
 			host,
 			exchangeSelector,
 			config.ExchangeDeclare,
@@ -75,6 +69,9 @@ func makeAMQP(
 			config.ContentType,
 			config.MandatoryPublish,
 			config.ImmediatePublish,
+			config.EventPrepareConcurrency,
+			config.PendingPublishBufferSize,
+			config.MaxPublishAttempts,
 		)
 
 		if err != nil {

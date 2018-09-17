@@ -8,10 +8,13 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/satori/go.uuid"
 
 	"github.com/streadway/amqp"
 	"github.com/stretchr/testify/assert"
@@ -28,11 +31,14 @@ import (
 
 const (
 	amqpDefaultURL = "amqp://localhost:5672"
+	messageField   = "message"
 )
 
 type eventInfo struct {
 	events []beat.Event
 }
+
+// TODO: separate tests for unhappy things like mandatory=>unroutable, immediate=>noconsumers, ...
 
 func TestAMQPPublish(t *testing.T) {
 	logp.TestingSetup(logp.WithSelectors("amqp"))
@@ -58,7 +64,7 @@ func TestAMQPPublish(t *testing.T) {
 			testExchange,
 			testRoutingKey,
 			single(common.MapStr{
-				"message": id,
+				messageField: id,
 			}),
 		},
 		{
@@ -69,8 +75,8 @@ func TestAMQPPublish(t *testing.T) {
 			testExchange + "-select",
 			testRoutingKey,
 			single(common.MapStr{
-				"foo":     testExchange + "-select",
-				"message": id,
+				"foo":        testExchange + "-select",
+				messageField: id,
 			}),
 		},
 		{
@@ -81,17 +87,48 @@ func TestAMQPPublish(t *testing.T) {
 			testExchange,
 			testRoutingKey + "-select",
 			single(common.MapStr{
-				"foo":     testRoutingKey + "-select",
-				"message": id,
+				"foo":        testRoutingKey + "-select",
+				messageField: id,
+			}),
+		},
+		{
+			"batch publish",
+			nil,
+			testExchange,
+			testRoutingKey,
+			randMulti(5, 100, common.MapStr{}),
+		},
+		{
+			"batch publish to selected exchange",
+			map[string]interface{}{
+				"exchange": "%{[foo]}",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			randMulti(5, 100, common.MapStr{
+				"foo": testExchange + "-select",
+			}),
+		},
+		{
+			"batch publish to selected routing key",
+			map[string]interface{}{
+				"routing_key": "%{[foo]}",
+			},
+			testExchange,
+			testRoutingKey + "-select",
+			randMulti(5, 100, common.MapStr{
+				"foo": testRoutingKey + "-select",
 			}),
 		},
 	}
 
 	defaultConfig := map[string]interface{}{
-		"hosts":             []string{getTestAMQPURL()},
-		"exchange":          testExchange,
-		"routing_key":       testRoutingKey,
-		"mandatory_publish": true,
+		"hosts":                       []string{getTestAMQPURL()},
+		"exchange":                    testExchange,
+		"routing_key":                 testRoutingKey,
+		"event_prepare_concurrency":   runtime.GOMAXPROCS(-1),
+		"pending_publish_buffer_size": 2048,
+		"max_publish_attempts":        3,
 		"exchange_declare": map[string]interface{}{
 			"enabled":     true,
 			"kind":        testExchangeKind,
@@ -125,7 +162,7 @@ func TestAMQPPublish(t *testing.T) {
 			// begin consuming from amqp ahead of sending events to cater for
 			// various persistence configurations
 
-			deliveries, consumerConnection, consumerChannel, err := testConsume(
+			deliveriesChan, consumerConnection, consumerChannel, err := testConsume(
 				t,
 				getTestAMQPURL(),
 				test.exchange,
@@ -157,8 +194,8 @@ func TestAMQPPublish(t *testing.T) {
 
 			// check amqp for the events we published
 
-			consumerTimeout := 5 * time.Second
-			stored, consumerIdle, consumerClosed := consumeUntilTimeout(deliveries, time.NewTimer(consumerTimeout))
+			consumerTimeout := 2 * time.Second
+			deliveries, consumerIdle, consumerClosed := consumeUntilTimeout(deliveriesChan, time.NewTimer(consumerTimeout))
 			t.Logf("consumer finished after %v, consumer idled for at least %v", consumerTimeout, consumerIdle)
 			if consumerClosed {
 				t.Logf("WARN: consumer channel closed before timeout")
@@ -166,13 +203,14 @@ func TestAMQPPublish(t *testing.T) {
 
 			//////
 
-			expected := flatten(test.events)
+			flattenedMessages := countTestEvents(test.events)
+			flattenedDeliveries := countDeliveries(t, deliveries)
 
-			assert.Equal(t, len(stored), len(expected))
+			assert.Lenf(t, flattenedDeliveries, len(flattenedMessages), "delivered message count differs from test message count")
 
-			// based on kafka integration tests, this is sensitive to ordering
-			for i, delivery := range stored {
-				compareDelivery(t, delivery, expected[i])
+			for message, count := range flattenedMessages {
+				deliveredCount, _ := flattenedDeliveries[message]
+				assert.Equalf(t, count, deliveredCount, "mismatch in count for message, test count: %v, delivered count: %v, message: %v", count, deliveredCount, message)
 			}
 		})
 	}
@@ -228,16 +266,15 @@ func testConsume(t *testing.T, url, exchange, kind, binding, queue, consumer, ke
 	return deliveries, connection, channel, nil
 }
 
-func compareDelivery(t *testing.T, delivery amqp.Delivery, event beat.Event) {
-	t.Logf("checking delivery, body: %v", string(delivery.Body))
-
+func decodeMessage(t *testing.T, body []byte) string {
 	var decoded map[string]interface{}
-	err := json.Unmarshal(delivery.Body, &decoded)
-	if err != nil {
-		t.Errorf("json decode: %v, body: %v", err, string(delivery.Body))
-		return
-	}
-	assert.Equal(t, event.Fields["message"], decoded["message"])
+	err := json.Unmarshal(body, &decoded)
+	assert.NoError(t, err)
+	message, found := decoded[messageField]
+	assert.True(t, found)
+	str, ok := message.(string)
+	assert.True(t, ok)
+	return str
 }
 
 func consumeUntilTimeout(ch <-chan amqp.Delivery, t *time.Timer) (deliveries []amqp.Delivery, idleTime time.Duration, closed bool) {
@@ -289,10 +326,30 @@ func getTestAMQPURL() string {
 	return getenv("AMQP_URL", amqpDefaultURL)
 }
 
-func flatten(infos []eventInfo) []beat.Event {
-	var out []beat.Event
+func countTestEvents(infos []eventInfo) map[string]uint64 {
+	out := map[string]uint64{}
 	for _, info := range infos {
-		out = append(out, info.events...)
+		for _, event := range info.events {
+			message := event.Fields[messageField].(string)
+			if _, found := out[message]; found {
+				out[message]++
+			} else {
+				out[message] = 1
+			}
+		}
+	}
+	return out
+}
+
+func countDeliveries(t *testing.T, deliveries []amqp.Delivery) map[string]uint64 {
+	out := map[string]uint64{}
+	for _, delivery := range deliveries {
+		message := decodeMessage(t, delivery.Body)
+		if _, found := out[message]; found {
+			out[message]++
+		} else {
+			out[message] = 1
+		}
 	}
 	return out
 }
@@ -305,6 +362,27 @@ func single(fields common.MapStr) []eventInfo {
 			},
 		},
 	}
+}
+
+func randMulti(batches, n int, event common.MapStr) []eventInfo {
+	var out []eventInfo
+	for i := 0; i < batches; i++ {
+		var data []beat.Event
+		for j := 0; j < n; j++ {
+			tmp := common.MapStr{}
+			for k, v := range event {
+				tmp[k] = v
+			}
+			tmp[messageField] = uuid.NewV4().String()
+			data = append(data, beat.Event{
+				Timestamp: time.Now(),
+				Fields:    tmp,
+			})
+		}
+
+		out = append(out, eventInfo{data})
+	}
+	return out
 }
 
 // common helpers used by unit+integration tests
