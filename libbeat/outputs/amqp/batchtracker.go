@@ -1,48 +1,61 @@
 package amqp
 
 import (
-	"sync"
-	"sync/atomic"
+	"github.com/satori/go.uuid"
 
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/publisher"
 )
 
-type batchTracker struct {
-	batch       *publisher.Batch
-	client      *client
-	counter     uint64
-	retries     []*publisher.Event
-	retriesLock sync.Mutex
-	logger      *logp.Logger
-	total       uint64
-}
+func newBatchTracker(batch publisher.Batch, parentLogger *logp.Logger) *batchTracker {
+	id := uuid.NewV4().String()
+	logger := parentLogger.With("batch_id", id)
+	logger.Debugf("begin tracking batch")
 
-func (b *batchTracker) fail(event *publisher.Event, err error) {
-	b.logger.Errorf("publish: %v", err)
-
-	b.retriesLock.Lock()
-	defer b.retriesLock.Unlock()
-
-	if b.retries == nil {
-		b.retries = []*publisher.Event{event}
-	} else {
-		b.retries = append(b.retries, event)
+	return &batchTracker{
+		id:      id,
+		batch:   batch,
+		total:   uint64(len(batch.Events())),
+		logger:  logger,
+		retries: []publisher.Event{},
 	}
-
-	b.dec()
 }
 
-func (b *batchTracker) dec() {
-	// to decrement x, do AddUint64(&x, ^uint64(0)) - stdlib atomic docs
-	if atomic.AddUint64(&b.counter, ^uint64(0)) != 0 {
+type batchTracker struct {
+	id      string
+	batch   publisher.Batch
+	total   uint64
+	logger  *logp.Logger
+	retries []publisher.Event
+	counter uint64
+}
+
+func (b *batchTracker) confirmEvent() {
+	b.logger.Debugf("batch event confirm")
+	b.countEvent()
+}
+
+func (b *batchTracker) retryEvent(event publisher.Event) {
+	b.logger.Debugf("batch event retry")
+	b.retries = append(b.retries, event)
+	b.countEvent()
+}
+
+func (b *batchTracker) countEvent() {
+	b.counter++
+	if b.counter != b.total {
 		return
 	}
 
-	// TODO: need to handle Nacks and other issues
 	b.logger.Debugf("batch complete")
-	batch := *b.batch
+	b.finalize()
+}
 
-	batch.CancelledEvents()
-	batch.ACK()
+func (b *batchTracker) finalize() {
+	if len(b.retries) < 1 {
+		b.batch.ACK()
+		return
+	}
+
+	b.batch.RetryEvents(b.retries)
 }

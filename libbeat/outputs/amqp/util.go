@@ -2,26 +2,32 @@ package amqp
 
 import (
 	"errors"
+	"time"
 
-	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/streadway/amqp"
 )
 
 var (
-	ErrNack = errors.New("NACK received from AMQP")
+	ErrClosed     = errors.New("output closed")
+	ErrNack       = errors.New("NACK received from AMQP")
+	ErrNilChannel = errors.New("AMQP client channel is nil")
 )
+
+type timeFunc func() time.Time
 
 type empty struct{}
 
 type preparedEvent struct {
-	exchangeName string
-	routingKey   string
-	publishing   amqp.Publishing
+	incomingEvent      eventTracker
+	exchangeName       string
+	routingKey         string
+	attempt            uint64
+	outgoingPublishing amqp.Publishing
 }
 
 type pendingPublish struct {
-	event        *publisher.Event
-	batchTracker *batchTracker
+	deliveryTag uint64
+	event       preparedEvent
 }
 
 // getDeliveryMode returns an amqp Delivery Mode value based on a boolean-style
