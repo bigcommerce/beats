@@ -8,7 +8,6 @@ import (
 	"io"
 	"math/rand"
 	"os"
-	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -123,12 +122,10 @@ func TestAMQPPublish(t *testing.T) {
 	}
 
 	defaultConfig := map[string]interface{}{
-		"hosts":                       []string{getTestAMQPURL()},
-		"exchange":                    testExchange,
-		"routing_key":                 testRoutingKey,
-		"event_prepare_concurrency":   runtime.GOMAXPROCS(-1),
-		"pending_publish_buffer_size": 2048,
-		"max_publish_attempts":        3,
+		"hosts":                []string{getTestAMQPURL()},
+		"exchange":             testExchange,
+		"routing_key":          testRoutingKey,
+		"max_publish_attempts": 3,
 		"exchange_declare": map[string]interface{}{
 			"enabled":     true,
 			"kind":        testExchangeKind,
@@ -155,7 +152,7 @@ func TestAMQPPublish(t *testing.T) {
 			if err := output.Connect(); err != nil {
 				t.Fatal(err)
 			}
-			defer closeIfNotNil(t, "output:", output)
+			defer checkClose(t, "output close:", output)
 
 			batchesWaitGroup := &sync.WaitGroup{}
 
@@ -173,32 +170,40 @@ func TestAMQPPublish(t *testing.T) {
 				test.routingKey,
 			)
 
-			defer closeIfNotNil(t, "consume: connection close:", consumerConnection)
-			defer closeIfNotNil(t, "consume: channel close:", consumerChannel)
+			defer checkClose(t, "consume: connection close:", consumerConnection)
+			defer checkClose(t, "consume: channel close:", consumerChannel)
 			if err != nil {
 				t.Fatalf("consume: %v", err)
 			}
 
 			// publish event batches
-
-			for _, eventInfo := range test.events {
+			t.Logf("publishing %v batches", len(test.events))
+			for batchId, eventInfo := range test.events {
+				batchId := batchId
 				batchesWaitGroup.Add(1)
 				batch := outest.NewBatch(eventInfo.events...)
-				batch.OnSignal = func(_ outest.BatchSignal) {
-					batchesWaitGroup.Done()
+				batch.OnSignal = func(signal outest.BatchSignal) {
+					defer batchesWaitGroup.Done()
+					if signal.Tag == outest.BatchACK {
+						t.Logf("batch %v ACKed", batchId)
+					} else {
+						t.Errorf("batch %v was not ACKed, actual signal was: %v, returned events len: %v", batchId, signal.Tag, len(signal.Events))
+					}
 				}
 				output.Publish(batch)
 			}
 
+			t.Logf("waiting for batches to publish")
 			batchesWaitGroup.Wait()
 
 			// check amqp for the events we published
-
+			t.Logf("consuming events from AMQP")
 			consumerTimeout := 2 * time.Second
-			deliveries, consumerIdle, consumerClosed := consumeUntilTimeout(deliveriesChan, time.NewTimer(consumerTimeout))
-			t.Logf("consumer finished after %v, consumer idled for at least %v", consumerTimeout, consumerIdle)
+			deliveries, consumerClosed := consumeUntilTimeout(deliveriesChan, consumerTimeout)
 			if consumerClosed {
-				t.Logf("WARN: consumer channel closed before timeout")
+				t.Logf("WARN: consumer channel closed before timeout, which may indicate a connectivity issue")
+			} else {
+				t.Logf("stopped consuming after %v timeout", consumerTimeout)
 			}
 
 			//////
@@ -216,7 +221,7 @@ func TestAMQPPublish(t *testing.T) {
 	}
 }
 
-func closeIfNotNil(t *testing.T, prefix string, c io.Closer) {
+func checkClose(t *testing.T, prefix string, c io.Closer) {
 	if c != nil {
 		if err := c.Close(); err != nil {
 			t.Logf(prefix+" %v", err)
@@ -277,22 +282,29 @@ func decodeMessage(t *testing.T, body []byte) string {
 	return str
 }
 
-func consumeUntilTimeout(ch <-chan amqp.Delivery, t *time.Timer) (deliveries []amqp.Delivery, idleTime time.Duration, closed bool) {
-	lastReceive := time.Now()
+// consumeUntilTimeout consumes deliveries from ch until no more arrive after a
+// timeout period (which resets after each delivery). A slice of consumed
+// deliveries is returned, along with a bool flag which will be true if ch was
+// closed before a timeout occurred.
+func consumeUntilTimeout(ch <-chan amqp.Delivery, timeout time.Duration) (deliveries []amqp.Delivery, closed bool) {
+	timer := time.NewTimer(timeout)
 
 	for {
 		select {
-		case <-t.C:
-			idleTime = time.Since(lastReceive)
+		case <-timer.C:
 			return
 		case delivery, ok := <-ch:
+			if !timer.Stop() {
+				<-timer.C
+			}
+
 			if !ok {
 				closed = true
-				idleTime = time.Since(lastReceive)
 				return
 			}
+
 			deliveries = append(deliveries, delivery)
-			lastReceive = time.Now()
+			timer.Reset(timeout)
 		}
 	}
 }
