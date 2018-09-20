@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elastic/beats/libbeat/publisher"
+
 	"github.com/satori/go.uuid"
 	"github.com/streadway/amqp"
 
@@ -14,40 +16,29 @@ import (
 	"github.com/elastic/beats/libbeat/outputs"
 	"github.com/elastic/beats/libbeat/outputs/codec"
 	"github.com/elastic/beats/libbeat/outputs/outil"
-	"github.com/elastic/beats/libbeat/publisher"
 	"github.com/elastic/beats/libbeat/testing"
 )
 
 type client struct {
-	beat                    beat.Info
-	logger                  *logp.Logger
-	codecConfig             codec.Config
-	observer                outputs.Observer
-	contentType             string
-	dialURL                 string
-	exchangeDeclare         exchangeDeclareConfig
-	exchangeNameSelector    outil.Selector
-	deliveryMode            uint8
-	immediatePublish        bool
-	mandatoryPublish        bool
-	routingKeySelector      outil.Selector
-	redactedURL             string
-	eventPrepareConcurrency uint64
-	maxPublishAttempts      uint64
+	beat                     beat.Info
+	logger                   *logp.Logger
+	codecConfig              codec.Config
+	observer                 outputs.Observer
+	contentType              string
+	dialURL                  string
+	exchangeDeclare          exchangeDeclareConfig
+	exchangeNameSelector     outil.Selector
+	deliveryMode             uint8
+	immediatePublish         bool
+	mandatoryPublish         bool
+	routingKeySelector       outil.Selector
+	redactedURL              string
+	eventPrepareConcurrency  uint64
+	pendingPublishBufferSize uint64
 
 	closed         bool
 	closeLock      sync.RWMutex
 	closeWaitGroup sync.WaitGroup
-
-	channel    *amqp.Channel
-	connection *amqp.Connection
-
-	//pendingPublishes     map[uint64]preparedEvent
-	//pendingPublishesLock sync.RWMutex
-	pendingPublishes chan pendingPublish
-
-	publishCounter     uint64
-	publishCounterLock sync.Mutex
 
 	incomingEvents chan eventTracker
 	outgoingEvents chan preparedEvent
@@ -67,30 +58,24 @@ func newClient(
 	immediatePublish bool,
 	eventPrepareConcurrency uint64,
 	pendingPublishBufferSize uint64,
-	maxPublishAttempts uint64,
 ) (*client, error) {
 	logger := logp.NewLogger("amqp")
 	logger.Debugf("newClient")
 
 	c := &client{
-		observer:                observer,
-		beat:                    beat,
-		codecConfig:             codecConfig,
-		dialURL:                 dialURL,
-		exchangeNameSelector:    exchangeName,
-		exchangeDeclare:         exchangeDeclare,
-		routingKeySelector:      routingKey,
-		deliveryMode:            getDeliveryMode(persistentDeliveryMode),
-		contentType:             contentType,
-		mandatoryPublish:        mandatoryPublish,
-		immediatePublish:        immediatePublish,
-		eventPrepareConcurrency: eventPrepareConcurrency,
-		maxPublishAttempts:      maxPublishAttempts,
-
-		//pendingPublishes: map[uint64]preparedEvent{},
-		incomingEvents:   make(chan eventTracker),
-		outgoingEvents:   make(chan preparedEvent),
-		pendingPublishes: make(chan pendingPublish, pendingPublishBufferSize),
+		observer:                 observer,
+		beat:                     beat,
+		codecConfig:              codecConfig,
+		dialURL:                  dialURL,
+		exchangeNameSelector:     exchangeName,
+		exchangeDeclare:          exchangeDeclare,
+		routingKeySelector:       routingKey,
+		deliveryMode:             getDeliveryMode(persistentDeliveryMode),
+		contentType:              contentType,
+		mandatoryPublish:         mandatoryPublish,
+		immediatePublish:         immediatePublish,
+		eventPrepareConcurrency:  eventPrepareConcurrency,
+		pendingPublishBufferSize: pendingPublishBufferSize,
 	}
 
 	// redact password from dial URL for logging
@@ -106,39 +91,31 @@ func newClient(
 	return c, nil
 }
 
-// String implements Stringer for this output.
 func (c *client) String() string {
 	return "amqp(" + c.redactedURL + ")"
 }
 
-// Connect initialises and commences this output.
+// Connect prepares this client for publishing events to an AMQP service, but
+// does not eagerly establish a connection.
+//
+// Connectivity will be established as needed once Publish calls are made.
 func (c *client) Connect() error {
-	if !c.exchangeDeclare.Enabled {
-		c.logger.Infof("exchange declaration not enabled in config, events may fail to publish if destination exchanges do not exist")
+	c.closeLock.RLock()
+	if c.closed {
+		c.closeLock.RUnlock()
+		return ErrClosed
 	}
 
-	connection, err := c.dial()
-	if err != nil {
-		return fmt.Errorf("dial: %v", err)
-	}
+	c.incomingEvents = make(chan eventTracker)
+	c.outgoingEvents = make(chan preparedEvent)
 
-	c.logger.Debugf("create channel")
-	channel, err := connection.Channel()
-	if err != nil {
-		// TODO: channel (re-)creation might need to be a thing this output manages transparently if the channel closes during client lifetime... needs testing
-		// TODO: consider creating a channel-owner/coordinator struct separate from the client since channels are not meant to be shared concurrently
-		connection.Close()
-		return fmt.Errorf("channel create: %v", err)
-	}
-
-	c.connection = connection
-	c.channel = channel
-
-	if err = c.startRoutines(); err != nil {
+	if err := c.startRoutines(); err != nil {
+		c.closeLock.RUnlock()
 		c.Close()
-		return err
+		return fmt.Errorf("start: %v", err)
 	}
 
+	c.closeLock.RUnlock()
 	return nil
 }
 
@@ -149,66 +126,56 @@ func (c *client) Test(d testing.Driver) {
 		d.Fatal("dial", err)
 		defer conn.Close()
 		defer c.Close()
-
-		d.Info("server version", fmt.Sprintf("%d.%d", c.connection.Major, c.connection.Minor))
+		d.Info("server version", fmt.Sprintf("%d.%d", conn.Major, conn.Minor))
 	})
 }
 
-// Close terminates this output and blocks until child routines are finished.
-// A single, combined error is returned if any Closable sub-resource returns an
-// error.
+// Close terminates this output and blocks until in-flight batches have
+// completed.
+//
+// Close is safe to call multiple times.
+//
+// Close will cause subsequent Publish calls to fail. In-flight batches are not
+// affected.
+//
+// Once closed, this output should cannot reused.
 func (c *client) Close() error {
 	c.logger.Debugf("closing output")
 
 	c.closeLock.Lock()
+	defer c.closeLock.Unlock()
+
 	if c.closed {
-		c.closeLock.Unlock()
 		c.logger.Debugf("close called on closing / already-closed output")
 		return nil
 	}
+
 	c.closed = true
-	c.logger.Debugf("closing incomingEvents channel")
-	close(c.incomingEvents)
-	c.closeLock.Unlock()
-
-	var channelErr, connectionErr error
-
-	if c.channel != nil {
-		c.logger.Debugf("closing amqp channel")
-		channelErr = c.channel.Close()
-		c.channel = nil
-		c.logger.Debugf("amqp channel closed")
+	if c.incomingEvents != nil {
+		c.logger.Debugf("closing incoming events channel")
+		close(c.incomingEvents)
+	} else {
+		c.logger.Debugf("incoming events channel is nil, skipping close() call")
 	}
 
 	c.logger.Debugf("waiting for child routines to finish")
 	c.closeWaitGroup.Wait()
-	c.logger.Debugf("child routines finished")
-
-	if c.connection != nil {
-		c.logger.Debugf("closing amqp connection")
-		connectionErr = c.connection.Close()
-		c.connection = nil
-		c.logger.Debugf("amqp connection closed")
-	}
 
 	c.logger.Debugf("output closed")
-
-	if channelErr != nil || connectionErr != nil {
-		return fmt.Errorf("AMQP close, channel error: %v, connection error: %v", channelErr, connectionErr)
-	}
-
 	return nil
 }
 
 func (c *client) Publish(batch publisher.Batch) error {
-	// hold a read lock on the closed flag so that incomingEvents remains open
-	// for this batch at least
+	// Hold a read lock on the closed flag so that incomingEvents remains open
+	// for this batch at least.
 	c.closeLock.RLock()
 	defer c.closeLock.RUnlock()
 	if c.closed {
 		return ErrClosed
 	}
 
+	// Start tracking this batch and put all of its events into the incoming
+	// events queue.
 	batchTracker := newBatchTracker(batch, c.logger)
 	for _, event := range batch.Events() {
 		c.incomingEvents <- newEventTracker(batchTracker, event)
@@ -217,70 +184,8 @@ func (c *client) Publish(batch publisher.Batch) error {
 	return nil
 }
 
-//func (c *client) oldPublish(batch publisher.Batch) error {
-//	events := batch.Events()
-//	batchSize := len(events)
-//	if batchSize < 1 {
-//		c.logger.Debugf("skipping empty batch")
-//		return nil
-//	}
-//
-//	tracker := &batchTracker{
-//		batch:   batch,
-//		counter: uint64(batchSize),
-//		total:   uint64(batchSize),
-//	}
-//
-//	c.observer.NewBatch(batchSize)
-//	c.logger.Debugf("publish batch, size: %v", batchSize)
-//
-//	for i := range events {
-//		event := events[i]
-//		eventTracker := newEventTracker(tracker, event)
-//
-//		outgoingEvent, err := c.prepareEvent(eventTracker, time.Now)
-//		if err != nil {
-//			c.logger.Errorf("dropping due to error: %v", err)
-//			c.observer.Dropped(1)
-//			tracker.failRetry(event, err)
-//			continue
-//		}
-//
-//		//err = c.ensureExchangeDeclared(outgoingEvent.exchangeName)
-//		//if err != nil {
-//		//	return fmt.Errorf("exchange declare: %v", err)
-//		//}
-//
-//		c.logger.Debugf("publish event")
-//		c.publishCounterLock.Lock()
-//		err = c.channel.Publish(outgoingEvent.exchangeName, outgoingEvent.routingKey, c.mandatoryPublish, c.immediatePublish, outgoingEvent.outgoingPublishing)
-//		if err != nil {
-//			c.observer.Failed(1)
-//			tracker.failRetry(event, err)
-//
-//			if event.Guaranteed() {
-//				c.logger.Errorf("publish error: %v", err)
-//			} else {
-//				c.logger.Warnf("publish error: %v", err)
-//			}
-//		} else {
-//			c.logger.Debugf("event published")
-//			c.publishCounter++
-//			c.pendingPublishesLock.Lock()
-//			c.pendingPublishes[c.publishCounter] = &pendingPublish{
-//				batchTracker: tracker,
-//				event:        &event,
-//			}
-//			c.pendingPublishesLock.Unlock()
-//		}
-//		c.publishCounterLock.Unlock()
-//	}
-//
-//	c.logger.Debugf("batch published")
-//
-//	return nil
-//}
-
+// dial establishes and returns a connection to the AMQP service based on the
+// client configuration.
 func (c *client) dial() (*amqp.Connection, error) {
 	c.logger.Debugf("dial")
 	return amqp.Dial(c.dialURL)
@@ -289,160 +194,60 @@ func (c *client) dial() (*amqp.Connection, error) {
 // startRoutines starts any goroutine-based workers. The first error (if any)
 // from child-routine-start funcions is returned.
 func (c *client) startRoutines() error {
-	var err error
-
-	if err = c.startHandlingConfirmations(); err != nil {
-		return err
+	if err := c.startHandlingOutgoingEvents(); err != nil {
+		return fmt.Errorf("start outgoing events: %v", err)
 	}
 
-	if err = c.startHandlingReturns(); err != nil {
-		return err
-	}
-
-	if err = c.startHandlingOutgoingEvents(); err != nil {
-		return err
-	}
-
-	if err = c.startHandlingIncomingEvents(); err != nil {
-		return err
+	if err := c.startHandlingIncomingEvents(); err != nil {
+		return fmt.Errorf("start incoming events: %v", err)
 	}
 
 	return nil
-}
-
-func (c *client) startHandlingReturns() error {
-	if c.channel == nil {
-		return ErrNilChannel
-	}
-
-	// the channel created here is not stored on our client struct since the
-	// amqp library is responsible for closing it
-
-	c.logger.Debugf("subscribe to publish returns")
-	returns := c.channel.NotifyReturn(make(chan amqp.Return))
-
-	c.closeWaitGroup.Add(1)
-	go c.handleReturns(returns)
-
-	return nil
-}
-
-func (c *client) handleReturns(returns <-chan amqp.Return) {
-	defer c.closeWaitGroup.Done()
-	defer c.logger.Debugf("returns worker finished")
-	c.logger.Debugf("returns worker starting")
-
-	for ret := range returns {
-		c.logger.Debugf("return received: %#v", ret) // TODO: check what to log here
-	}
-}
-
-// startHandlingConfirmations puts the current channel in Confirm mode and
-// starts confirmation handlers in new goroutines. An error may be returned if
-// the channel cannot be placed in Confirm mode.
-func (c *client) startHandlingConfirmations() error {
-	if c.channel == nil {
-		return ErrNilChannel
-	}
-
-	c.logger.Debugf("enable confirm mode")
-	if err := c.channel.Confirm(false); err != nil {
-		return fmt.Errorf("AMQP confirm mode: %v", err)
-	}
-
-	// the channel created here is not stored on our client struct since the
-	// amqp library is responsible for closing it
-
-	c.logger.Debugf("subscribe to publish confirmations")
-	confirmations := c.channel.NotifyPublish(make(chan amqp.Confirmation))
-
-	c.closeWaitGroup.Add(1)
-	go c.handleConfirmations(confirmations)
-
-	return nil
-}
-
-// handleConfirmations processes data arriving on the given confirmations
-// channel until the channel is closed.
-func (c *client) handleConfirmations(confirmations <-chan amqp.Confirmation) {
-	defer c.closeWaitGroup.Done()
-	defer c.logger.Debugf("confirmations worker finished")
-	c.logger.Debugf("confirmations worker starting")
-
-	for confirmation := range confirmations {
-		c.logger.Debugf("confirmation received, delivery tag: %v, ack: %v", confirmation.DeliveryTag, confirmation.Ack)
-
-		// the amqp library guarantees that confirms are delivered in the same
-		// order that Publish is called, so, the next item on the pending
-		// channel should be what was just confirmed
-		pending, open := <-c.pendingPublishes
-		if !open {
-			c.logger.Errorf("pendingPublishes channel is closed when we're still receiving confirmations!")
-			c.Close()
-			return
-		}
-
-		if pending.deliveryTag != confirmation.DeliveryTag {
-			c.logger.Errorf("confirmation delivery tag %v does not match pending delivery tag %v!", confirmation.DeliveryTag, pending.deliveryTag)
-			c.Close()
-			return
-		}
-
-		if !confirmation.Ack {
-			if c.maxPublishAttempts > 0 && pending.event.attempt >= c.maxPublishAttempts {
-				pending.event.incomingEvent.batchTracker.retryEvent(pending.event.incomingEvent.event)
-				continue
-			}
-			pending.event.attempt++
-			c.outgoingEvents <- pending.event
-			continue
-		}
-
-		c.logger.Debugf("confirmation matched pending publish, confirming event on batch: %v", pending.event.incomingEvent.batchTracker.id)
-		pending.event.incomingEvent.batchTracker.confirmEvent()
-	}
 }
 
 func (c *client) startHandlingIncomingEvents() error {
 	if c.incomingEvents == nil {
-		return errors.New("incomingEvents channel is nil")
+		return errors.New("incoming events channel is nil")
 	}
+
+	c.closeWaitGroup.Add(1)
+
+	// We support concurrency on event preparation since it may cause single-
+	// CPU contention if the data and configuration is complex enough.
 
 	var concurrency uint64 = 1
 	if c.eventPrepareConcurrency > 1 {
 		concurrency = c.eventPrepareConcurrency
 	}
 
-	// we support concurrency on event preparation since it may cause single-
-	// cpu contention if the data and configuration is complex
-	handlerWaitGroup := &sync.WaitGroup{}
+	var wg sync.WaitGroup
 	for i := uint64(1); i <= concurrency; i++ {
+		// Encoders are not safe for concurrent use: create one per routine.
 		encoder, err := codec.CreateEncoder(c.beat, c.codecConfig)
 		if err != nil {
 			return fmt.Errorf("create encoder: %v", err)
 		}
 
-		handlerWaitGroup.Add(1)
-		go c.handleIncomingEvents(i, encoder, handlerWaitGroup)
+		wg.Add(1)
+		go c.handleIncomingEvents(i, encoder, &wg)
 	}
 
-	c.closeWaitGroup.Add(1)
-	go c.handleIncomingEventsShutdown(handlerWaitGroup)
+	go c.finalizeIncomingEventHandlers(&wg)
 
 	return nil
 }
 
-func (c *client) handleIncomingEventsShutdown(handlerWaitGroup *sync.WaitGroup) {
-	defer c.closeWaitGroup.Done()
-	handlerWaitGroup.Wait()
-	c.logger.Debugf("closing outgoingEvents channel")
+func (c *client) finalizeIncomingEventHandlers(wg *sync.WaitGroup) {
+	wg.Wait()
+	c.logger.Debugf("incoming event handlers finished, closing outgoing events channel")
 	close(c.outgoingEvents)
+	c.closeWaitGroup.Done()
 }
 
 // handleIncomingEvents prepares incoming events for publishing and places them
 // on an outgoing events queue.
-func (c *client) handleIncomingEvents(workerId uint64, encoder codec.Codec, handlerWaitGroup *sync.WaitGroup) {
-	defer handlerWaitGroup.Done()
+func (c *client) handleIncomingEvents(workerId uint64, encoder codec.Codec, wg *sync.WaitGroup) {
+	defer wg.Done()
 	defer c.logger.Debugf("incoming event worker %v finished", workerId)
 	c.logger.Debugf("incoming event worker %v starting", workerId)
 
@@ -462,8 +267,10 @@ func (c *client) startHandlingOutgoingEvents() error {
 		return errors.New("outgoingEvents channel is nil")
 	}
 
-	// this should not support concurrency: https://github.com/streadway/amqp/issues/208#issuecomment-244160130
+	// concurrency not yet supported here, but when it is each concurrent
+	// outgoing handler needs to manage its own channel, see ...
 	// "Channels are not supposed to be shared for concurrent publishing (in this client and in general)."
+	// this should not support concurrency: https://github.com/streadway/amqp/issues/208#issuecomment-244160130
 	c.closeWaitGroup.Add(1)
 	go c.handleOutgoingEvents()
 
@@ -475,38 +282,68 @@ func (c *client) handleOutgoingEvents() {
 	defer c.logger.Debugf("outgoing event worker finished")
 	c.logger.Debugf("outgoing event worker started")
 
-	declaredExchanges := map[string]empty{}
-	var deliveryTag uint64
+	var declarer exchangeDeclarer
+	if c.exchangeDeclare.Enabled {
+		declarer = c.declareExchange
+	} else {
+		c.logger.Infof("exchange declaration not enabled in config")
+		declarer = func(_ amqpChannel, _ string) error { return nil }
+	}
 
-	var err error
-	for outgoingEvent := range c.outgoingEvents {
-		if c.exchangeDeclare.Enabled {
-			if _, declared := declaredExchanges[outgoingEvent.exchangeName]; !declared {
-				if err = c.declareExchange(c.channel, outgoingEvent.exchangeName); err != nil {
-					// TODO: must drop/retry message if exchange-declare failed
-				}
-				declaredExchanges[outgoingEvent.exchangeName] = empty{}
-			}
-		}
-
-		c.logger.Debugf("publish event")
-		err = c.channel.Publish(outgoingEvent.exchangeName, outgoingEvent.routingKey, c.mandatoryPublish, c.immediatePublish, outgoingEvent.outgoingPublishing)
+	// TODO: consider moving these loop innards into functions so we can use `defer` to better handle Close() calls
+	for {
+		connection, err := c.dial()
 		if err != nil {
-			// TODO: must drop/retry message if publish failed
-			continue
+			// For now, consider dial failures as permanent, though we could
+			// do some limited retries here if filebeat won't do that.
+			c.logger.Errorf("dial: %v", err)
+			return
 		}
 
-		deliveryTag++
-		c.logger.Debugf("published event with delivery tag: %v", deliveryTag)
-		c.pendingPublishes <- pendingPublish{
-			deliveryTag: deliveryTag,
-			event:       outgoingEvent,
+		for {
+			channel, err := connection.Channel()
+			if err != nil {
+				// Channel create failed. Try again on a new connection.
+				c.logger.Errorf("channel create: %v", err)
+				break
+			}
+
+			eventPublisher, err := newEventPublisher(c.logger, channel, declarer, c.outgoingEvents, c.pendingPublishBufferSize, c.mandatoryPublish, c.immediatePublish)
+			if err != nil {
+				// Publisher create failed. Perhaps setting the channel to
+				// Confirm mode failed. Try again on a new channel, but ensure
+				// the channel is closed, too.
+				c.logger.Errorf("new publisher: %v", err)
+				channel.Close()
+				continue
+			}
+
+			err = eventPublisher.done()
+
+			// No matter the reason, when the publisher finished, close the
+			// channel. We can't reuse the channel on new publishers.
+			channel.Close()
+
+			// When a publisher ends with no error, the assumption is that the
+			// outgoingEvents chan is closed ...
+			if err == nil {
+				// ...  so we close the connection and finish up.
+				connection.Close()
+				return
+			}
+
+			// ... in other cases there will be some sort exchange-declare or
+			// publish error, but there's still events to try and publish so we
+			// loop to retry on a new channel (and maybe a new connection).
+			c.logger.Errorf("publisher: %v", err)
 		}
+
+		connection.Close()
 	}
 }
 
-// prepareEvent prepares an incoming event for publishing to AMQP based on the
-// output's configuration.
+// prepareEvent converts an incoming beat event into a ready-to-publish (and
+// track) AMQP publishing.
 func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now timeFunc) (*preparedEvent, error) {
 	content := &incoming.event.Content
 
@@ -531,7 +368,6 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 		incomingEvent: incoming,
 		exchangeName:  exchangeName,
 		routingKey:    routingKey,
-		attempt:       1,
 		outgoingPublishing: amqp.Publishing{
 			Timestamp:    now(),
 			DeliveryMode: c.deliveryMode,
@@ -542,6 +378,8 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 	}, nil
 }
 
+// encodeEvent serializes a given event using the given encoder according to the
+// client's current configuration.
 func (c *client) encodeEvent(encoder codec.Codec, content *beat.Event) ([]byte, error) {
 	serialized, err := encoder.Encode(c.beat.Beat, content)
 	if err != nil {
@@ -557,9 +395,12 @@ func (c *client) encodeEvent(encoder codec.Codec, content *beat.Event) ([]byte, 
 // declareExchange declares an exchange according to the client's current
 // configuration using the given channel.
 //
-// No duplication checks for repeated declarations are performed here. See
-// handleOutgoingEvents.
-func (c *client) declareExchange(channel *amqp.Channel, exchangeName string) error {
-	c.logger.Debugf("declare exchange, name: %v, kind: %v, durable: %v, auto-delete: %v", exchangeName, c.exchangeDeclare.Kind, c.exchangeDeclare.Durable, c.exchangeDeclare.AutoDelete)
-	return c.channel.ExchangeDeclare(exchangeName, c.exchangeDeclare.Kind, c.exchangeDeclare.Durable, c.exchangeDeclare.AutoDelete, false, false, nil)
+// No duplication checks for repeated declarations are performed here. Callers
+// of this function are expected to deal with that.
+func (c *client) declareExchange(channel amqpChannel, exchangeName string) error {
+	c.logger.Debugf("declare exchange, name: %v, kind: %v, durable: %v, auto-delete: %v, passive: %v", exchangeName, c.exchangeDeclare.Kind, c.exchangeDeclare.Durable, c.exchangeDeclare.AutoDelete, c.exchangeDeclare.Passive)
+	if c.exchangeDeclare.Passive {
+		return channel.ExchangeDeclarePassive(exchangeName, c.exchangeDeclare.Kind, c.exchangeDeclare.Durable, c.exchangeDeclare.AutoDelete, false, false, nil)
+	}
+	return channel.ExchangeDeclare(exchangeName, c.exchangeDeclare.Kind, c.exchangeDeclare.Durable, c.exchangeDeclare.AutoDelete, false, false, nil)
 }
