@@ -47,9 +47,6 @@ func makeAMQP(
 		return outputs.Fail(fmt.Errorf("routing key: %v", err))
 	}
 
-	// TODO: real values
-	retry := 0
-
 	hosts, err := outputs.ReadHostList(cfg)
 	if err != nil {
 		return outputs.Fail(fmt.Errorf("host list: %v", err))
@@ -71,7 +68,6 @@ func makeAMQP(
 			config.ImmediatePublish,
 			config.EventPrepareConcurrency,
 			config.PendingPublishBufferSize,
-			config.MaxPublishAttempts,
 		)
 
 		if err != nil {
@@ -81,5 +77,5 @@ func makeAMQP(
 		clients[i] = client
 	}
 
-	return outputs.SuccessNet(false, config.BulkMaxSize, retry, clients)
+	return outputs.SuccessNet(false, config.BulkMaxSize, config.MaxRetries, clients)
 }
