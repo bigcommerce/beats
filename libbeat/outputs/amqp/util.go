@@ -8,9 +8,11 @@ import (
 )
 
 var (
-	ErrClosed     = errors.New("output closed")
-	ErrNack       = errors.New("NACK received from AMQP")
-	ErrNilChannel = errors.New("AMQP client channel is nil")
+	ErrClosed                        = errors.New("output closed")
+	ErrNack                          = errors.New("NACK received from AMQP")
+	ErrNilChannel                    = errors.New("AMQP client channel is nil")
+	ErrConfirmationsClosed           = errors.New("confirmations channel closed with a pending publish")
+	ErrConfirmationsClosedWithReturn = errors.New("confirmations channel closed with a pending publish and orphaned return signal")
 )
 
 type timeFunc func() time.Time
@@ -27,6 +29,18 @@ type preparedEvent struct {
 type pendingPublish struct {
 	deliveryTag uint64
 	event       preparedEvent
+}
+
+// retry is a convenience function for signalling a retry back to the origin
+// batch for this pending publish.
+func (p pendingPublish) retry() {
+	p.event.incomingEvent.batchTracker.retryEvent(p.event.incomingEvent.event)
+}
+
+// retry is a convenience function for signalling a confirmation back to the
+// origin batch for this pending publish.
+func (p pendingPublish) confirm() {
+	p.event.incomingEvent.batchTracker.confirmEvent()
 }
 
 type exchangeDeclarer func(amqpChannel, string) error
