@@ -30,6 +30,7 @@ func newEventPublisher(logger *logp.Logger, channel amqpChannel, declarer exchan
 		pendingChan:      make(chan pendingPublish, pendingBufferSize),
 		doneChan:         make(chan error, 1),
 		confirmationChan: channel.NotifyPublish(make(chan amqp.Confirmation)),
+		returnChan:       channel.NotifyReturn(make(chan amqp.Return)),
 	}
 
 	ep.logger.Debugf("eventPublisher starting")
@@ -52,9 +53,12 @@ type eventPublisher struct {
 	pendingChan      chan pendingPublish
 	doneChan         chan error
 	confirmationChan chan amqp.Confirmation
+	returnChan       chan amqp.Return
 	deliveryTag      uint64
 }
 
+// done blocks until eventPublisher has finished. The first error found on the
+// internal doneChan will be returned, if any.
 func (e *eventPublisher) done() (err error) {
 	defer e.logger.Debugf("eventPublisher finished")
 	for e := range e.doneChan {
@@ -75,49 +79,40 @@ func (e *eventPublisher) ensureDeclared(exchange string) error {
 	return nil
 }
 
-// TODO: might need to handle returns unless they also get sent to the confirm channel, in which case we may at least want to log them
-//
-//func (c *client) handleReturns(returns <-chan amqp.Return) {
-//	defer c.closeWaitGroup.Done()
-//	defer c.logger.Debugf("returns worker finished")
-//	c.logger.Debugf("returns worker starting")
-//
-//	for ret := range returns {
-//		c.logger.Debugf("return received: %#v", ret) // TODO: check what to log here
-//	}
-//}
-
 func (e *eventPublisher) confirmWorker() {
 	defer close(e.doneChan)
 	defer e.logger.Debugf("confirmWorker finished")
 	e.logger.Debugf("confirmWorker starting")
 
-	var warned bool
+	var errLogged bool
 	for pending := range e.pendingChan {
-		confirmation, open := <-e.confirmationChan
-		if !open && !warned {
-			// Just warn once to avoid log spam in case the confirm channel
-			// closes when there are many pending publishes.
-			warned = true
-			e.logger.Warnf("AMQP confirmation channel closed early! all pending publishes will be considered NACKed and retried")
-		}
+		con, ret, err := getNextConfirmation(e.returnChan, e.confirmationChan)
 
-		var deliveryMatch bool
-		if open {
-			// The AMQP library is meant to guarantee that confirmation order
-			// matches publish order. If there's a mismatch here, then either
-			// that guarantee has been broken, or we've messed up somehow.
-			deliveryMatch = confirmation.DeliveryTag == pending.deliveryTag
-			if !deliveryMatch {
-				e.logger.Errorf("AMQP confirmation delivery tag (%v) does not match pending delivery tag (%v)! pending publish will be considered NACKed and retried", confirmation.DeliveryTag, pending.deliveryTag)
+		if err != nil {
+			// drain and retry everything on pendingChan, but only log once
+			if !errLogged {
+				errLogged = true
+				e.logger.Errorf("AMQP confirmation error, remaining pending publishes will be considered NACKed and retried: %v", err)
+				e.doneChan <- err
 			}
+			pending.retry()
+			continue
 		}
 
-		if open && deliveryMatch && confirmation.Ack {
-			pending.event.incomingEvent.batchTracker.confirmEvent()
-		} else {
-			pending.event.incomingEvent.batchTracker.retryEvent(pending.event.incomingEvent.event)
+		deliveryMatch := con.DeliveryTag == pending.deliveryTag
+		if !deliveryMatch {
+			e.logger.Errorf("AMQP confirmation delivery tag (%v) does not match pending delivery tag (%v)! pending publish will be considered NACKed and retried", con.DeliveryTag, pending.deliveryTag)
+			pending.retry()
+			continue
 		}
+
+		if ret != nil {
+			e.logger.Warnf("AMQP returned message, will retry, reply: %v (%v)", ret.ReplyText, ret.ReplyCode)
+			pending.retry()
+			continue
+		}
+
+		pending.confirm()
 	}
 }
 
@@ -127,8 +122,8 @@ func (e *eventPublisher) confirmWorker() {
 // publishWorker ends when preparedEvents is closed, when declaring an exchange
 // fails, or when channel.Publish fails.
 func (e *eventPublisher) publishWorker() {
-	// Note: Let confirmWorker close doneChan, which it should do shortly after
-	// pendingChan is closed.
+	// Note: Let confirmWorker close doneChan. It should close it shortly after
+	// pendingChan is closed, which will happen here if there's an error.
 	defer close(e.pendingChan)
 	defer e.logger.Debugf("publishWorker finished")
 	e.logger.Debugf("publishWorker starting")

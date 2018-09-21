@@ -39,6 +39,55 @@ type eventInfo struct {
 
 // TODO: separate tests for unhappy things like mandatory=>unroutable, immediate=>noconsumers, ...
 
+func TestAMQPMandatoryUnroutableEventIsRetried(t *testing.T) {
+	logp.TestingSetup(logp.WithSelectors("amqp"))
+
+	id := strconv.Itoa(rand.New(rand.NewSource(int64(time.Now().Nanosecond()))).Int())
+
+	cfg := makeConfig(t, map[string]interface{}{
+		"hosts":             []string{getTestAMQPURL()},
+		"exchange":          fmt.Sprintf("test-libbeat-%s", id),
+		"routing_key":       fmt.Sprintf("test-libbeat-%s-nonexist", id),
+		"mandatory_publish": true,
+		"exchange_declare": map[string]interface{}{
+			"enabled":     true,
+			"kind":        "fanout",
+			"auto_delete": true,
+		},
+	})
+
+	grp, err := makeAMQP(beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
+	if err != nil {
+		t.Fatalf("makeAMQP: %v", err)
+	}
+
+	output := grp.Clients[0].(*client)
+	if err := output.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer checkClose(t, "output close:", output)
+
+	event := single(common.MapStr{messageField: id})[0].events[0]
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	batch := outest.NewBatch(event)
+	batch.OnSignal = func(signal outest.BatchSignal) {
+		defer wg.Done()
+		t.Logf("batch signal: %v, returned events len: %v", signal.Tag, len(signal.Events))
+		assert.Equal(t, outest.BatchRetryEvents, signal.Tag)
+		assert.Equal(t, 1, len(signal.Events))
+		if len(signal.Events) == 1 {
+			assert.Equal(t, event, signal.Events[0].Content)
+		}
+	}
+	output.Publish(batch)
+
+	t.Logf("waiting for batches to publish")
+	wg.Wait()
+	t.Logf("done")
+}
+
 func TestAMQPPublish(t *testing.T) {
 	logp.TestingSetup(logp.WithSelectors("amqp"))
 
@@ -122,10 +171,9 @@ func TestAMQPPublish(t *testing.T) {
 	}
 
 	defaultConfig := map[string]interface{}{
-		"hosts":                []string{getTestAMQPURL()},
-		"exchange":             testExchange,
-		"routing_key":          testRoutingKey,
-		"max_publish_attempts": 3,
+		"hosts":       []string{getTestAMQPURL()},
+		"exchange":    testExchange,
+		"routing_key": testRoutingKey,
 		"exchange_declare": map[string]interface{}{
 			"enabled":     true,
 			"kind":        testExchangeKind,
