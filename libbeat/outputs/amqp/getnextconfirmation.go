@@ -1,10 +1,16 @@
 package amqp
 
-import "github.com/streadway/amqp"
+import (
+	"fmt"
+
+	"github.com/elastic/beats/libbeat/logp"
+
+	"github.com/streadway/amqp"
+)
 
 // getNextConfirmation polls both returns and confirmations to get the next
 // confirmation from amqp.
-func getNextConfirmation(rch <-chan amqp.Return, cch <-chan amqp.Confirmation) (*amqp.Confirmation, *amqp.Return, error) {
+func getNextConfirmation(logger *logp.Logger, pending pendingPublish, rch <-chan amqp.Return, cch <-chan amqp.Confirmation) (*amqp.Confirmation, *amqp.Return, error) {
 	var retPtr *amqp.Return
 	var conPtr *amqp.Confirmation
 	var err error
@@ -46,8 +52,20 @@ Select:
 		} else {
 			// we're in an unstable state if cch is closed when we are looking
 			// to confirm a pending publish
-			err = ErrConfirmationsClosed
+			return nil, nil, ErrConfirmationsClosed
 		}
+	}
+
+	if conPtr != nil {
+		if conPtr.DeliveryTag != pending.deliveryTag {
+			return nil, nil, fmt.Errorf("mismatch on confirmed delivery tag (%v) and pending delivery tag (%v)", conPtr.DeliveryTag, pending.deliveryTag)
+		}
+
+		if retPtr != nil && retPtr.MessageId != pending.event.outgoingPublishing.MessageId {
+			return nil, nil, fmt.Errorf("mismatch on returned message id (%v) and pending message id (%v)", retPtr.MessageId, pending.event.outgoingPublishing.MessageId)
+		}
+
+		logger.Debugf("got next confirmation OK, delivery tag: %v, message id: %v", conPtr.DeliveryTag, pending.event.outgoingPublishing.MessageId)
 	}
 
 	return conPtr, retPtr, err

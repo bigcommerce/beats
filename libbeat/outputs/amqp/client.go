@@ -301,6 +301,7 @@ func (c *client) handleOutgoingEvents() {
 		}
 
 		for {
+			c.logger.Debugf("channel create")
 			channel, err := connection.Channel()
 			if err != nil {
 				// Channel create failed. Try again on a new connection.

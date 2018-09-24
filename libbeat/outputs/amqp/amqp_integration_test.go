@@ -31,7 +31,7 @@ const (
 	amqpDefaultURL    = "amqp://localhost:5672"
 	messageField      = "message"
 	defaultBatchCount = 5
-	defaultBatchSize  = 10
+	defaultBatchSize  = 100
 )
 
 type eventInfo struct {
@@ -247,19 +247,25 @@ func TestAMQPRetry(t *testing.T) {
 			testRoutingKey + "-missing",
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
 		},
-		// TODO: consider testing immediate_publish, however, we'd need a queue bound for that test
-	}
-
-	defaultConfig := map[string]interface{}{
-		"hosts":                     []string{getTestAMQPURL()},
-		"exchange":                  testExchange,
-		"routing_key":               testRoutingKey,
-		"event_prepare_concurrency": 1, // so that publishing order is deterministic for these tests
+		{
+			"batch publish to missing exchange should all be retried",
+			map[string]interface{}{},
+			testExchange + "-not-declared",
+			testRoutingKey,
+			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
+		},
+		// TODO: consider testing immediate_publish, however, we'd need a queue-bind setup for that test
 	}
 
 	for i, test := range tests {
 		test := test
 		name := fmt.Sprintf("run test(%v): %v", i, test.title)
+
+		defaultConfig := map[string]interface{}{
+			"hosts":       []string{getTestAMQPURL()},
+			"exchange":    test.exchange,
+			"routing_key": test.routingKey,
+		}
 
 		cfg := makeConfig(t, defaultConfig)
 		if test.config != nil {
@@ -290,9 +296,17 @@ func TestAMQPRetry(t *testing.T) {
 					defer wg.Done()
 					assert.Equal(t, outest.BatchRetryEvents, signal.Tag, "unexpected batch signal")
 					assert.Equal(t, len(test.events[batchId].events), len(signal.Events), "unexpected size of retry events slice")
-					for i, event := range signal.Events {
-						assert.Equal(t, test.events[batchId].events[i].Fields[messageField], event.Content.Fields[messageField], "events to try not in expected order")
+					for _, batchEvent := range test.events[batchId].events {
+						var found bool
+						for _, signalEvent := range signal.Events {
+							if signalEvent.Content.Fields[messageField] == batchEvent.Fields[messageField] {
+								found = true
+								break
+							}
+						}
+						assert.True(t, found, "message in batch not found in retry list")
 					}
+
 					atomic.AddInt64(&signals, 1)
 				}
 
