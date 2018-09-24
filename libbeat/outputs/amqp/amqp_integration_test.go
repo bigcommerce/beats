@@ -10,10 +10,9 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/satori/go.uuid"
 
 	"github.com/streadway/amqp"
 	"github.com/stretchr/testify/assert"
@@ -29,63 +28,14 @@ import (
 )
 
 const (
-	amqpDefaultURL = "amqp://localhost:5672"
-	messageField   = "message"
+	amqpDefaultURL    = "amqp://localhost:5672"
+	messageField      = "message"
+	defaultBatchCount = 5
+	defaultBatchSize  = 10
 )
 
 type eventInfo struct {
 	events []beat.Event
-}
-
-// TODO: separate tests for unhappy things like mandatory=>unroutable, immediate=>noconsumers, ...
-
-func TestAMQPMandatoryUnroutableEventIsRetried(t *testing.T) {
-	logp.TestingSetup(logp.WithSelectors("amqp"))
-
-	id := strconv.Itoa(rand.New(rand.NewSource(int64(time.Now().Nanosecond()))).Int())
-
-	cfg := makeConfig(t, map[string]interface{}{
-		"hosts":             []string{getTestAMQPURL()},
-		"exchange":          fmt.Sprintf("test-libbeat-%s", id),
-		"routing_key":       fmt.Sprintf("test-libbeat-%s-nonexist", id),
-		"mandatory_publish": true,
-		"exchange_declare": map[string]interface{}{
-			"enabled":     true,
-			"kind":        "fanout",
-			"auto_delete": true,
-		},
-	})
-
-	grp, err := makeAMQP(beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
-	if err != nil {
-		t.Fatalf("makeAMQP: %v", err)
-	}
-
-	output := grp.Clients[0].(*client)
-	if err := output.Connect(); err != nil {
-		t.Fatal(err)
-	}
-	defer checkClose(t, "output close:", output)
-
-	event := single(common.MapStr{messageField: id})[0].events[0]
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	batch := outest.NewBatch(event)
-	batch.OnSignal = func(signal outest.BatchSignal) {
-		defer wg.Done()
-		t.Logf("batch signal: %v, returned events len: %v", signal.Tag, len(signal.Events))
-		assert.Equal(t, outest.BatchRetryEvents, signal.Tag)
-		assert.Equal(t, 1, len(signal.Events))
-		if len(signal.Events) == 1 {
-			assert.Equal(t, event, signal.Events[0].Content)
-		}
-	}
-	output.Publish(batch)
-
-	t.Logf("waiting for batches to publish")
-	wg.Wait()
-	t.Logf("done")
 }
 
 func TestAMQPPublish(t *testing.T) {
@@ -144,7 +94,7 @@ func TestAMQPPublish(t *testing.T) {
 			nil,
 			testExchange,
 			testRoutingKey,
-			randMulti(5, 100, common.MapStr{}),
+			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
 		},
 		{
 			"batch publish to selected exchange",
@@ -153,7 +103,7 @@ func TestAMQPPublish(t *testing.T) {
 			},
 			testExchange + "-select",
 			testRoutingKey,
-			randMulti(5, 100, common.MapStr{
+			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testExchange + "-select",
 			}),
 		},
@@ -164,7 +114,7 @@ func TestAMQPPublish(t *testing.T) {
 			},
 			testExchange,
 			testRoutingKey + "-select",
-			randMulti(5, 100, common.MapStr{
+			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testRoutingKey + "-select",
 			}),
 		},
@@ -246,7 +196,7 @@ func TestAMQPPublish(t *testing.T) {
 
 			// check amqp for the events we published
 			t.Logf("consuming events from AMQP")
-			consumerTimeout := 2 * time.Second
+			consumerTimeout := 3 * time.Second
 			deliveries, consumerClosed := consumeUntilTimeout(deliveriesChan, consumerTimeout)
 			if consumerClosed {
 				t.Logf("WARN: consumer channel closed before timeout, which may indicate a connectivity issue")
@@ -265,6 +215,94 @@ func TestAMQPPublish(t *testing.T) {
 				deliveredCount, _ := flattenedDeliveries[message]
 				assert.Equalf(t, count, deliveredCount, "mismatch in count for message, test count: %v, delivered count: %v, message: %v", count, deliveredCount, message)
 			}
+		})
+	}
+}
+
+func TestAMQPRetry(t *testing.T) {
+	logp.TestingSetup(logp.WithSelectors("amqp"))
+
+	id := strconv.Itoa(rand.New(rand.NewSource(int64(time.Now().Nanosecond()))).Int())
+	testExchange := fmt.Sprintf("test-libbeat-%s", id)
+	testRoutingKey := fmt.Sprintf("test-libbeat-%s", id)
+
+	tests := []struct {
+		title      string
+		config     map[string]interface{}
+		exchange   string
+		routingKey string
+		events     []eventInfo
+	}{
+		{
+			"mandatory batch publish to unroutable key should all be retried",
+			map[string]interface{}{
+				"mandatory_publish": true,
+				"exchange_declare": map[string]interface{}{
+					"enabled":     true,
+					"kind":        "fanout",
+					"auto_delete": true,
+				},
+			},
+			testExchange,
+			testRoutingKey + "-missing",
+			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
+		},
+		// TODO: consider testing immediate_publish, however, we'd need a queue bound for that test
+	}
+
+	defaultConfig := map[string]interface{}{
+		"hosts":                     []string{getTestAMQPURL()},
+		"exchange":                  testExchange,
+		"routing_key":               testRoutingKey,
+		"event_prepare_concurrency": 1, // so that publishing order is deterministic for these tests
+	}
+
+	for i, test := range tests {
+		test := test
+		name := fmt.Sprintf("run test(%v): %v", i, test.title)
+
+		cfg := makeConfig(t, defaultConfig)
+		if test.config != nil {
+			cfg.Merge(makeConfig(t, test.config))
+		}
+
+		t.Run(name, func(t *testing.T) {
+			grp, err := makeAMQP(beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
+			if err != nil {
+				t.Fatalf("makeAMQP: %v", err)
+			}
+
+			output := grp.Clients[0].(*client)
+			if err := output.Connect(); err != nil {
+				t.Fatal(err)
+			}
+			defer checkClose(t, "output close:", output)
+
+			// publish event batches
+			var signals int64
+			wg := &sync.WaitGroup{}
+			t.Logf("publishing %v batches", len(test.events))
+			for batchId, eventInfo := range test.events {
+				batchId := batchId
+				wg.Add(1)
+				batch := outest.NewBatch(eventInfo.events...)
+				batch.OnSignal = func(signal outest.BatchSignal) {
+					defer wg.Done()
+					assert.Equal(t, outest.BatchRetryEvents, signal.Tag, "unexpected batch signal")
+					assert.Equal(t, len(test.events[batchId].events), len(signal.Events), "unexpected size of retry events slice")
+					for i, event := range signal.Events {
+						assert.Equal(t, test.events[batchId].events[i].Fields[messageField], event.Content.Fields[messageField], "events to try not in expected order")
+					}
+					atomic.AddInt64(&signals, 1)
+				}
+
+				output.Publish(batch)
+			}
+
+			t.Logf("waiting for batches to publish")
+			wg.Wait()
+			t.Logf("done")
+			assert.Equal(t, len(test.events), int(signals), "did not receive correct amount of batch signals")
 		})
 	}
 }
@@ -433,7 +471,7 @@ func randMulti(batches, n int, event common.MapStr) []eventInfo {
 			for k, v := range event {
 				tmp[k] = v
 			}
-			tmp[messageField] = uuid.NewV4().String()
+			tmp[messageField] = strconv.Itoa(int(time.Now().UnixNano()))
 			data = append(data, beat.Event{
 				Timestamp: time.Now(),
 				Fields:    tmp,
