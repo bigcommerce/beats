@@ -81,39 +81,39 @@ func (e *eventPublisher) ensureDeclared(exchange string) error {
 
 func (e *eventPublisher) confirmWorker() {
 	defer close(e.doneChan)
-	defer e.logger.Debugf("confirmWorker finished")
 	e.logger.Debugf("confirmWorker starting")
 
 	var errLogged bool
+	var pendingCounter, retryCounter, confirmCounter uint64
 	for pending := range e.pendingChan {
-		con, ret, err := getNextConfirmation(e.returnChan, e.confirmationChan)
+		pendingCounter++
+
+		_, ret, err := getNextConfirmation(e.logger, pending, e.returnChan, e.confirmationChan)
 
 		if err != nil {
 			// drain and retry everything on pendingChan, but only log once
 			if !errLogged {
 				errLogged = true
-				e.logger.Errorf("AMQP confirmation error, remaining pending publishes will be considered NACKed and retried: %v", err)
+				e.logger.Errorf("AMQP confirmation error, remaining pending publishes which fail like this will be considered NACKed and retried: %v", err)
 				e.doneChan <- err
 			}
-			pending.retry()
-			continue
-		}
-
-		deliveryMatch := con.DeliveryTag == pending.deliveryTag
-		if !deliveryMatch {
-			e.logger.Errorf("AMQP confirmation delivery tag (%v) does not match pending delivery tag (%v)! pending publish will be considered NACKed and retried", con.DeliveryTag, pending.deliveryTag)
+			retryCounter++
 			pending.retry()
 			continue
 		}
 
 		if ret != nil {
 			e.logger.Warnf("AMQP returned message, will retry, reply: %v (%v)", ret.ReplyText, ret.ReplyCode)
+			retryCounter++
 			pending.retry()
 			continue
 		}
 
+		confirmCounter++
 		pending.confirm()
 	}
+
+	e.logger.Debugf("confirmWorker finished, processed %v pending publishes, retries: %v, confirms: %v", pendingCounter, retryCounter, confirmCounter)
 }
 
 // publishWorker attempts to publish the contents of preparedEvents to the

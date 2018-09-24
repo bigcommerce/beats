@@ -2,6 +2,7 @@ package amqp
 
 import (
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,11 @@ type batchTracker struct {
 	// retries holds the events which should be retried after batch completion
 	retries []publisher.Event
 
+	// retriesM is a mutex lock for retries; in most cases this is accessed in
+	// one routine but edge cases like channel errors can cause concurrent calls
+	// to batchTracker's retry methods
+	retriesM sync.Mutex
+
 	// counter is the count of completed events, regardless of success status
 	counter uint64
 }
@@ -59,7 +65,9 @@ func (b *batchTracker) confirmEvent() {
 // be sent back to the beats core to handle.
 func (b *batchTracker) retryEvent(event publisher.Event) {
 	b.logger.Debugf("batch event retry")
+	b.retriesM.Lock()
 	b.retries = append(b.retries, event)
+	b.retriesM.Unlock()
 	b.countEvent()
 }
 
@@ -73,13 +81,15 @@ func (b *batchTracker) countEvent() {
 	if count != b.total {
 		return
 	}
-
 	b.finalize()
 }
 
 // finalize sends the appropriate signal back to the beats core based on the
 // status of the batch.
 func (b *batchTracker) finalize() {
+	b.retriesM.Lock()
+	defer b.retriesM.Unlock()
+
 	if len(b.retries) > 0 {
 		b.logger.Debugf("batch complete, retrying %v events", len(b.retries))
 		b.batch.RetryEvents(b.retries)
