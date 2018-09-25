@@ -16,7 +16,6 @@ var (
 type amqpConfig struct {
 	Hosts                    []string              `config:"hosts" validate:"required"`
 	ExchangeDeclare          exchangeDeclareConfig `config:"exchange_declare"`
-	RoutingKey               string                `config:"routing_key" validate:"required"`
 	PersistentDeliveryMode   bool                  `config:"persistent_delivery_mode"`
 	ContentType              string                `config:"content_type"`
 	MandatoryPublish         bool                  `config:"mandatory_publish"`
