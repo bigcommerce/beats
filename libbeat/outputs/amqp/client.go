@@ -309,6 +309,8 @@ func (c *client) handleOutgoingEvents() {
 				break
 			}
 
+			go c.logErrors("channel error: ", channel.NotifyClose(make(chan *amqp.Error)))
+
 			eventPublisher, err := newEventPublisher(c.logger, channel, declarer, c.outgoingEvents, c.pendingPublishBufferSize, c.mandatoryPublish, c.immediatePublish)
 			if err != nil {
 				// Publisher create failed. Perhaps setting the channel to
@@ -340,6 +342,15 @@ func (c *client) handleOutgoingEvents() {
 		}
 
 		connection.Close()
+	}
+}
+
+// logErrors logs all amqp.Errors received over ch to the client's logger.
+func (c *client) logErrors(prefix string, ch <-chan *amqp.Error) {
+	for err := range ch {
+		if err != nil {
+			c.logger.Errorf(prefix+"%v", err.Error())
+		}
 	}
 }
 
