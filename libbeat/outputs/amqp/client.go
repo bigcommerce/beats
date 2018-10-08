@@ -1,6 +1,7 @@
 package amqp
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"sync"
@@ -26,6 +27,7 @@ type client struct {
 	observer                 outputs.Observer
 	contentType              string
 	dialURL                  string
+	tlsConfig                *tls.Config
 	exchangeDeclare          exchangeDeclareConfig
 	exchangeNameSelector     outil.Selector
 	deliveryMode             uint8
@@ -49,6 +51,7 @@ func newClient(
 	beat beat.Info,
 	codecConfig codec.Config,
 	dialURL string,
+	tlsConfig *tls.Config,
 	exchangeName outil.Selector,
 	exchangeDeclare exchangeDeclareConfig,
 	routingKey outil.Selector,
@@ -67,6 +70,7 @@ func newClient(
 		beat:                     beat,
 		codecConfig:              codecConfig,
 		dialURL:                  dialURL,
+		tlsConfig:                tlsConfig,
 		exchangeNameSelector:     exchangeName,
 		exchangeDeclare:          exchangeDeclare,
 		routingKeySelector:       routingKey,
@@ -187,12 +191,17 @@ func (c *client) Publish(batch publisher.Batch) error {
 // dial establishes and returns a connection to the AMQP service based on the
 // client configuration.
 func (c *client) dial() (*amqp.Connection, error) {
-	c.logger.Debugf("dial")
-	return amqp.Dial(c.dialURL)
+	if c.tlsConfig == nil {
+		c.logger.Debugf("dialing without explicit TLS config")
+		return amqp.Dial(c.dialURL)
+	}
+
+	c.logger.Debugf("dialing with explicit TLS config")
+	return amqp.DialTLS(c.dialURL, c.tlsConfig)
 }
 
 // startRoutines starts any goroutine-based workers. The first error (if any)
-// from child-routine-start funcions is returned.
+// from child-routine-start functions is returned.
 func (c *client) startRoutines() error {
 	if err := c.startHandlingOutgoingEvents(); err != nil {
 		return fmt.Errorf("start outgoing events: %v", err)
