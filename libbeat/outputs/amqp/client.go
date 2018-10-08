@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -28,6 +29,7 @@ type client struct {
 	contentType              string
 	dialURL                  string
 	tlsConfig                *tls.Config
+	dialTimeout              time.Duration
 	exchangeDeclare          exchangeDeclareConfig
 	exchangeNameSelector     outil.Selector
 	deliveryMode             uint8
@@ -55,6 +57,7 @@ func newClient(
 	codecConfig codec.Config,
 	dialURL string,
 	tlsConfig *tls.Config,
+	dialTimeout time.Duration,
 	exchangeName outil.Selector,
 	exchangeDeclare exchangeDeclareConfig,
 	routingKey outil.Selector,
@@ -77,6 +80,7 @@ func newClient(
 		codecConfig:              codecConfig,
 		dialURL:                  dialURL,
 		tlsConfig:                tlsConfig,
+		dialTimeout:              dialTimeout,
 		exchangeNameSelector:     exchangeName,
 		exchangeDeclare:          exchangeDeclare,
 		routingKeySelector:       routingKey,
@@ -207,6 +211,20 @@ func (c *client) dial() (*amqp.Connection, error) {
 		FrameSize:       c.frameSize,
 		Heartbeat:       c.heartbeat,
 		TLSClientConfig: c.tlsConfig,
+		Dial: func(network string, addr string) (net.Conn, error) {
+			// this conn function copied from amqp library (it's not exported to reuse/modify)
+			conn, err := net.DialTimeout(network, addr, c.dialTimeout)
+			if err != nil {
+				return nil, err
+			}
+
+			// Heartbeating hasn't started yet, don't stall forever on a dead server.
+			if err := conn.SetReadDeadline(time.Now().Add(c.dialTimeout)); err != nil {
+				return nil, err
+			}
+
+			return conn, nil
+		},
 	})
 }
 
