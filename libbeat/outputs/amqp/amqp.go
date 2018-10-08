@@ -80,6 +80,9 @@ func makeAMQP(
 			config.ImmediatePublish,
 			config.EventPrepareConcurrency,
 			config.PendingPublishBufferSize,
+			config.ChannelMax,
+			config.FrameSize,
+			config.Heartbeat,
 		)
 
 		if err != nil {
