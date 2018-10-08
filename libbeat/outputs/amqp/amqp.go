@@ -1,6 +1,7 @@
 package amqp
 
 import (
+	"crypto/tls"
 	"fmt"
 
 	"github.com/elastic/beats/libbeat/beat"
@@ -52,6 +53,16 @@ func makeAMQP(
 		return outputs.Fail(fmt.Errorf("host list: %v", err))
 	}
 
+	tlsConfig, err := outputs.LoadTLSConfig(config.TLS)
+	if err != nil {
+		return outputs.Fail(fmt.Errorf("tls: %v", err))
+	}
+
+	var amqpTlsConfig *tls.Config
+	if tlsConfig != nil {
+		amqpTlsConfig = tlsConfig.BuildModuleConfig("")
+	}
+
 	clients := make([]outputs.NetworkClient, len(hosts))
 	for i, host := range hosts {
 		client, err := newClient(
@@ -59,6 +70,7 @@ func makeAMQP(
 			beat,
 			config.Codec,
 			host,
+			amqpTlsConfig,
 			exchangeSelector,
 			config.ExchangeDeclare,
 			routingKeySelector,

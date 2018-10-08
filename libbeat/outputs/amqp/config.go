@@ -4,6 +4,7 @@ import (
 	"errors"
 	"runtime"
 
+	"github.com/elastic/beats/libbeat/common/transport/tlscommon"
 	"github.com/elastic/beats/libbeat/outputs/codec"
 )
 
@@ -15,6 +16,7 @@ var (
 
 type amqpConfig struct {
 	Hosts                    []string              `config:"hosts" validate:"required"`
+	TLS                      *tlscommon.Config     `config:"ssl"`
 	ExchangeDeclare          exchangeDeclareConfig `config:"exchange_declare"`
 	PersistentDeliveryMode   bool                  `config:"persistent_delivery_mode"`
 	ContentType              string                `config:"content_type"`
