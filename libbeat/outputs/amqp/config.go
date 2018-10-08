@@ -10,9 +10,7 @@ import (
 )
 
 var (
-	ErrNoHostsConfigured   = errors.New("no hosts configured")
-	ErrBulkMaxSizeTooSmall = errors.New("bulk_max_size must be greater than or equal to 0")
-	ErrMaxRetriesTooSmall  = errors.New("max_retries must be greater than or equal to 0")
+	ErrNoHostsConfigured = errors.New("no hosts configured")
 )
 
 type amqpConfig struct {
@@ -23,14 +21,14 @@ type amqpConfig struct {
 	ContentType              string                `config:"content_type"`
 	MandatoryPublish         bool                  `config:"mandatory_publish"`
 	ImmediatePublish         bool                  `config:"immediate_publish"`
-	BulkMaxSize              int                   `config:"bulk_max_size"`
-	MaxRetries               int                   `config:"max_retries"`
-	EventPrepareConcurrency  uint64                `config:"event_prepare_concurrency"`
-	PendingPublishBufferSize uint64                `config:"pending_publish_buffer_size"`
-	ChannelMax               int                   `config:"channel_max"`
-	FrameSize                int                   `config:"frame_size"`
-	DialTimeout              time.Duration         `config:"dial_timeout"`
-	Heartbeat                time.Duration         `config:"heartbeat"`
+	BulkMaxSize              int                   `config:"bulk_max_size" validate:"min=0"`
+	MaxRetries               int                   `config:"max_retries" validate:"min=-1,nonzero"`
+	EventPrepareConcurrency  uint64                `config:"event_prepare_concurrency" validate:"min=1"`
+	PendingPublishBufferSize uint64                `config:"pending_publish_buffer_size" validate:"min=1"`
+	ChannelMax               int                   `config:"channel_max" validate:"min=0"`
+	FrameSize                int                   `config:"frame_size" validate:"min=0"`
+	DialTimeout              time.Duration         `config:"dial_timeout" validate:"min=0"`
+	Heartbeat                time.Duration         `config:"heartbeat" validate:"min=0"`
 	Codec                    codec.Config          `config:"codec"`
 }
 
@@ -57,14 +55,6 @@ func defaultConfig() amqpConfig {
 func (c *amqpConfig) Validate() error {
 	if len(c.Hosts) == 0 {
 		return ErrNoHostsConfigured
-	}
-
-	if c.BulkMaxSize < 0 {
-		return ErrBulkMaxSizeTooSmall
-	}
-
-	if c.MaxRetries < 0 {
-		return ErrMaxRetriesTooSmall
 	}
 
 	return nil
