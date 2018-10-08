@@ -29,6 +29,7 @@ type amqpConfig struct {
 	PendingPublishBufferSize uint64                `config:"pending_publish_buffer_size"`
 	ChannelMax               int                   `config:"channel_max"`
 	FrameSize                int                   `config:"frame_size"`
+	DialTimeout              time.Duration         `config:"dial_timeout"`
 	Heartbeat                time.Duration         `config:"heartbeat"`
 	Codec                    codec.Config          `config:"codec"`
 }
@@ -48,6 +49,7 @@ func defaultConfig() amqpConfig {
 		BulkMaxSize:              2048,
 		PendingPublishBufferSize: 2048,
 		EventPrepareConcurrency:  uint64(runtime.GOMAXPROCS(-1)),
+		DialTimeout:              30 * time.Second, // same value as amqp library but it's not exported from there
 		Heartbeat:                10 * time.Second, // same value as amqp library but it's not exported from there
 	}
 }
