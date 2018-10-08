@@ -71,6 +71,7 @@ func makeAMQP(
 			config.Codec,
 			host,
 			amqpTlsConfig,
+			config.DialTimeout,
 			exchangeSelector,
 			config.ExchangeDeclare,
 			routingKeySelector,
