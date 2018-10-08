@@ -3,6 +3,7 @@ package amqp
 import (
 	"errors"
 	"runtime"
+	"time"
 
 	"github.com/elastic/beats/libbeat/common/transport/tlscommon"
 	"github.com/elastic/beats/libbeat/outputs/codec"
@@ -26,6 +27,9 @@ type amqpConfig struct {
 	MaxRetries               int                   `config:"max_retries"`
 	EventPrepareConcurrency  uint64                `config:"event_prepare_concurrency"`
 	PendingPublishBufferSize uint64                `config:"pending_publish_buffer_size"`
+	ChannelMax               int                   `config:"channel_max"`
+	FrameSize                int                   `config:"frame_size"`
+	Heartbeat                time.Duration         `config:"heartbeat"`
 	Codec                    codec.Config          `config:"codec"`
 }
 
@@ -44,6 +48,7 @@ func defaultConfig() amqpConfig {
 		BulkMaxSize:              2048,
 		PendingPublishBufferSize: 2048,
 		EventPrepareConcurrency:  uint64(runtime.GOMAXPROCS(-1)),
+		Heartbeat:                10 * time.Second, // same value as amqp library but it's not exported from there
 	}
 }
 

@@ -37,6 +37,9 @@ type client struct {
 	redactedURL              string
 	eventPrepareConcurrency  uint64
 	pendingPublishBufferSize uint64
+	channelMax               int
+	frameSize                int
+	heartbeat                time.Duration
 
 	closed         bool
 	closeLock      sync.RWMutex
@@ -61,6 +64,9 @@ func newClient(
 	immediatePublish bool,
 	eventPrepareConcurrency uint64,
 	pendingPublishBufferSize uint64,
+	channelMax int,
+	frameSize int,
+	heartbeat time.Duration,
 ) (*client, error) {
 	logger := logp.NewLogger("amqp")
 	logger.Debugf("newClient")
@@ -80,6 +86,9 @@ func newClient(
 		immediatePublish:         immediatePublish,
 		eventPrepareConcurrency:  eventPrepareConcurrency,
 		pendingPublishBufferSize: pendingPublishBufferSize,
+		channelMax:               channelMax,
+		frameSize:                frameSize,
+		heartbeat:                heartbeat,
 	}
 
 	// redact password from dial URL for logging
@@ -191,13 +200,14 @@ func (c *client) Publish(batch publisher.Batch) error {
 // dial establishes and returns a connection to the AMQP service based on the
 // client configuration.
 func (c *client) dial() (*amqp.Connection, error) {
-	if c.tlsConfig == nil {
-		c.logger.Debugf("dialing without explicit TLS config")
-		return amqp.Dial(c.dialURL)
-	}
-
-	c.logger.Debugf("dialing with explicit TLS config")
-	return amqp.DialTLS(c.dialURL, c.tlsConfig)
+	// note: plain auth SASL can be set by amqp's Dial call, no need for it here
+	c.logger.Debugf("dial")
+	return amqp.DialConfig(c.dialURL, amqp.Config{
+		ChannelMax:      c.channelMax,
+		FrameSize:       c.frameSize,
+		Heartbeat:       c.heartbeat,
+		TLSClientConfig: c.tlsConfig,
+	})
 }
 
 // startRoutines starts any goroutine-based workers. The first error (if any)
