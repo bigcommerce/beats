@@ -128,7 +128,9 @@ func (c *client) Connect() error {
 
 	if err := c.startRoutines(); err != nil {
 		c.closeLock.RUnlock()
-		c.Close()
+		if closeErr := c.Close(); closeErr != nil {
+			c.logger.Errorf("post-connect-error close error: %v", closeErr)
+		}
 		return fmt.Errorf("start: %v", err)
 	}
 
@@ -141,9 +143,13 @@ func (c *client) Test(d testing.Driver) {
 	d.Run(c.String(), func(d testing.Driver) {
 		conn, err := c.dial()
 		d.Fatal("dial", err)
-		defer conn.Close()
-		defer c.Close()
 		d.Info("server version", fmt.Sprintf("%d.%d", conn.Major, conn.Minor))
+		if err = conn.Close(); err != nil {
+			d.Warn("test connection close error", fmt.Sprintf("%v", err))
+		}
+		if err = c.Close(); err != nil {
+			d.Warn("test client close error", fmt.Sprintf("%v", err))
+		}
 	})
 }
 
@@ -354,7 +360,9 @@ func (c *client) handleOutgoingEvents() {
 				// Confirm mode failed. Try again on a new channel, but ensure
 				// the channel is closed, too.
 				c.logger.Errorf("new publisher: %v", err)
-				channel.Close()
+				if closeErr := channel.Close(); closeErr != nil {
+					c.logger.Errorf("post-new-publisher-error close error: %v", closeErr)
+				}
 				continue
 			}
 
@@ -362,13 +370,17 @@ func (c *client) handleOutgoingEvents() {
 
 			// No matter the reason, when the publisher finished, close the
 			// channel. We can't reuse the channel on new publishers.
-			channel.Close()
+			if closeErr := channel.Close(); closeErr != nil {
+				c.logger.Errorf("publisher: channel close error: %v", closeErr)
+			}
 
 			// When a publisher ends with no error, the assumption is that the
 			// outgoingEvents chan is closed ...
 			if err == nil {
 				// ...  so we close the connection and finish up.
-				connection.Close()
+				if closeError := connection.Close(); closeError != nil {
+					c.logger.Errorf("publisher: connection close error: %v", closeError)
+				}
 				return
 			}
 
@@ -378,7 +390,9 @@ func (c *client) handleOutgoingEvents() {
 			c.logger.Errorf("publisher: %v", err)
 		}
 
-		connection.Close()
+		if closeError := connection.Close(); closeError != nil {
+			c.logger.Errorf("publisher: connection close error: %v", closeError)
+		}
 	}
 }
 
