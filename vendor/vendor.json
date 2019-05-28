@@ -1951,6 +1951,12 @@
 			"revisionTime": "2017-08-19T20:10:35Z"
 		},
 		{
+			"checksumSHA1": "Tutue3nEgM/87jitUcYv6ODwyNE=",
+			"path": "github.com/satori/go.uuid",
+			"revision": "b2ce2384e17bbe0c6d34077efa39dbab3e09123b",
+			"revisionTime": "2018-10-28T12:50:25Z"
+		},
+		{
 			"checksumSHA1": "KUrV5Esg6Wdcrv+hDc6/p0Q3/qw=",
 			"path": "github.com/shirou/gopsutil",
 			"revision": "0f70a4a06f7a1039305ec9b3ba9c2800f8929fba",
