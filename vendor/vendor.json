@@ -2013,6 +2013,12 @@
 			"revisionTime": "2017-05-08T18:43:26Z"
 		},
 		{
+			"checksumSHA1": "M9Vpq0g1nLqfEjll3PNZ/yz8gZY=",
+			"path": "github.com/streadway/amqp",
+			"revision": "75d898a42a940fbc854dfd1a4199eabdc00cf024",
+			"revisionTime": "2019-04-04T07:53:20Z"
+		},
+		{
 			"checksumSHA1": "XHH8+1ESYdBoyKSD4FXwdy1liUk=",
 			"path": "github.com/stretchr/objx",
 			"revision": "b8b73a35e9830ae509858c10dec5866b4d5c8bff",
