@@ -10,7 +10,7 @@ import (
 
 	"github.com/elastic/beats/libbeat/publisher"
 
-	"github.com/satori/go.uuid"
+	"github.com/gofrs/uuid"
 	"github.com/streadway/amqp"
 
 	"github.com/elastic/beats/libbeat/beat"
@@ -427,6 +427,11 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 		return nil, fmt.Errorf("encode: %v", err)
 	}
 
+	messageID, err := uuid.NewV4()
+	if err != nil {
+		return nil, fmt.Errorf("uuid: %v", err)
+	}
+
 	return &preparedEvent{
 		incomingEvent: incoming,
 		exchangeName:  exchangeName,
@@ -436,7 +441,7 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 			DeliveryMode: c.deliveryMode,
 			ContentType:  c.contentType,
 			Body:         body,
-			MessageId:    uuid.NewV4().String(),
+			MessageId:    messageID.String(),
 		},
 	}, nil
 }
