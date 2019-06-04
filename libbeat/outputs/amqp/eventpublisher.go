@@ -18,8 +18,9 @@
 package amqp
 
 import (
-	"github.com/elastic/beats/libbeat/logp"
 	"github.com/streadway/amqp"
+
+	"github.com/elastic/beats/libbeat/logp"
 )
 
 // newEventPublisher creates a new publisher for sending and confirming prepared
