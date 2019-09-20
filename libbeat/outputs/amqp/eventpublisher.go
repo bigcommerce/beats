@@ -31,7 +31,7 @@ import (
 //
 // The publisher will try and put the provided channel into confirm mode. An
 // error will be returned if this fails.
-func newEventPublisher(logger *logp.Logger, channel amqpChannel, declarer exchangeDeclarer, preparedEvents <-chan preparedEvent, pendingBufferSize uint64, mandatory, immediate bool) (*eventPublisher, error) {
+func newEventPublisher(logger *logp.Logger, channel amqpChannel, declarer exchangeDeclarer, preparedEvents <-chan preparedEvent, publishBuffersSize uint64, mandatory, immediate bool) (*eventPublisher, error) {
 	if err := channel.Confirm(false); err != nil {
 		return nil, err
 	}
@@ -45,9 +45,9 @@ func newEventPublisher(logger *logp.Logger, channel amqpChannel, declarer exchan
 		declarer:       declarer,
 
 		exchanges:        map[string]empty{},
-		pendingChan:      make(chan pendingPublish, pendingBufferSize),
+		pendingChan:      make(chan pendingPublish, publishBuffersSize),
 		doneChan:         make(chan error, 1),
-		confirmationChan: channel.NotifyPublish(make(chan amqp.Confirmation)),
+		confirmationChan: channel.NotifyPublish(make(chan amqp.Confirmation, publishBuffersSize)),
 		returnChan:       channel.NotifyReturn(make(chan amqp.Return)),
 	}
 

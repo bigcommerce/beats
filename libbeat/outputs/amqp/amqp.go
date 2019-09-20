@@ -76,6 +76,11 @@ func makeAMQP(
 		return outputs.Fail(fmt.Errorf("tls: %v", err))
 	}
 
+	if config.BulkMaxSize < 1 {
+		return outputs.Fail(fmt.Errorf("bulk max size %d must be >= 1", config.BulkMaxSize))
+	}
+	publishBuffersSize := uint64(config.BulkMaxSize)
+
 	var amqpTlsConfig *tls.Config
 	if tlsConfig != nil {
 		amqpTlsConfig = tlsConfig.BuildModuleConfig("")
@@ -98,7 +103,7 @@ func makeAMQP(
 			config.MandatoryPublish,
 			config.ImmediatePublish,
 			config.EventPrepareConcurrency,
-			config.PendingPublishBufferSize,
+			publishBuffersSize,
 			config.ChannelMax,
 			config.FrameSize,
 			config.Heartbeat,

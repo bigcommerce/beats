@@ -39,26 +39,26 @@ import (
 )
 
 type client struct {
-	beat                     beat.Info
-	logger                   *logp.Logger
-	codecConfig              codec.Config
-	observer                 outputs.Observer
-	contentType              string
-	dialURL                  string
-	tlsConfig                *tls.Config
-	dialTimeout              time.Duration
-	exchangeDeclare          exchangeDeclareConfig
-	exchangeNameSelector     outil.Selector
-	deliveryMode             uint8
-	immediatePublish         bool
-	mandatoryPublish         bool
-	routingKeySelector       outil.Selector
-	redactedURL              string
-	eventPrepareConcurrency  uint64
-	pendingPublishBufferSize uint64
-	channelMax               int
-	frameSize                int
-	heartbeat                time.Duration
+	beat                    beat.Info
+	logger                  *logp.Logger
+	codecConfig             codec.Config
+	observer                outputs.Observer
+	contentType             string
+	dialURL                 string
+	tlsConfig               *tls.Config
+	dialTimeout             time.Duration
+	exchangeDeclare         exchangeDeclareConfig
+	exchangeNameSelector    outil.Selector
+	deliveryMode            uint8
+	immediatePublish        bool
+	mandatoryPublish        bool
+	routingKeySelector      outil.Selector
+	redactedURL             string
+	eventPrepareConcurrency uint64
+	publishBuffersSize      uint64
+	channelMax              int
+	frameSize               int
+	heartbeat               time.Duration
 
 	closed         bool
 	closeLock      sync.RWMutex
@@ -83,7 +83,7 @@ func newClient(
 	mandatoryPublish bool,
 	immediatePublish bool,
 	eventPrepareConcurrency uint64,
-	pendingPublishBufferSize uint64,
+	publishBuffersSize uint64,
 	channelMax int,
 	frameSize int,
 	heartbeat time.Duration,
@@ -92,24 +92,24 @@ func newClient(
 	logger.Debugf("newClient")
 
 	c := &client{
-		observer:                 observer,
-		beat:                     beat,
-		codecConfig:              codecConfig,
-		dialURL:                  dialURL,
-		tlsConfig:                tlsConfig,
-		dialTimeout:              dialTimeout,
-		exchangeNameSelector:     exchangeName,
-		exchangeDeclare:          exchangeDeclare,
-		routingKeySelector:       routingKey,
-		deliveryMode:             getDeliveryMode(persistentDeliveryMode),
-		contentType:              contentType,
-		mandatoryPublish:         mandatoryPublish,
-		immediatePublish:         immediatePublish,
-		eventPrepareConcurrency:  eventPrepareConcurrency,
-		pendingPublishBufferSize: pendingPublishBufferSize,
-		channelMax:               channelMax,
-		frameSize:                frameSize,
-		heartbeat:                heartbeat,
+		observer:                observer,
+		beat:                    beat,
+		codecConfig:             codecConfig,
+		dialURL:                 dialURL,
+		tlsConfig:               tlsConfig,
+		dialTimeout:             dialTimeout,
+		exchangeNameSelector:    exchangeName,
+		exchangeDeclare:         exchangeDeclare,
+		routingKeySelector:      routingKey,
+		deliveryMode:            getDeliveryMode(persistentDeliveryMode),
+		contentType:             contentType,
+		mandatoryPublish:        mandatoryPublish,
+		immediatePublish:        immediatePublish,
+		eventPrepareConcurrency: eventPrepareConcurrency,
+		publishBuffersSize:      publishBuffersSize,
+		channelMax:              channelMax,
+		frameSize:               frameSize,
+		heartbeat:               heartbeat,
 	}
 
 	// redact password from dial URL for logging
@@ -371,7 +371,7 @@ func (c *client) handleOutgoingEvents() {
 
 			go c.logErrors("channel error: ", channel.NotifyClose(make(chan *amqp.Error)))
 
-			eventPublisher, err := newEventPublisher(c.logger, channel, declarer, c.outgoingEvents, c.pendingPublishBufferSize, c.mandatoryPublish, c.immediatePublish)
+			eventPublisher, err := newEventPublisher(c.logger, channel, declarer, c.outgoingEvents, c.publishBuffersSize, c.mandatoryPublish, c.immediatePublish)
 			if err != nil {
 				// Publisher create failed. Perhaps setting the channel to
 				// Confirm mode failed. Try again on a new channel, but ensure
