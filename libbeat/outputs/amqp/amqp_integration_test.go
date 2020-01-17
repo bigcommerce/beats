@@ -158,7 +158,7 @@ func TestAMQPPublish(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
-			grp, err := makeAMQP(beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
+			grp, err := makeAMQP(nil, beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
 			if err != nil {
 				t.Fatalf("makeAMQP: %v", err)
 			}
@@ -290,7 +290,7 @@ func TestAMQPRetry(t *testing.T) {
 		}
 
 		t.Run(name, func(t *testing.T) {
-			grp, err := makeAMQP(beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
+			grp, err := makeAMQP(nil, beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
 			if err != nil {
 				t.Fatalf("makeAMQP: %v", err)
 			}
