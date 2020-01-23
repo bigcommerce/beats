@@ -165,9 +165,9 @@ func TestAMQPPublish(t *testing.T) {
 
 			output := grp.Clients[0].(*client)
 			if err := output.Connect(); err != nil {
-				t.Fatal(err)
+				t.Fatalf("output.Connect: %v", err)
 			}
-			defer checkClose(t, "output close:", output)
+			defer checkClose(t, "output", output)
 
 			batchesWaitGroup := &sync.WaitGroup{}
 
@@ -185,8 +185,14 @@ func TestAMQPPublish(t *testing.T) {
 				test.routingKey,
 			)
 
-			defer checkClose(t, "consume: connection close:", consumerConnection)
-			defer checkClose(t, "consume: channel close:", consumerChannel)
+			if consumerConnection != nil {
+				defer checkClose(t, "consume connection", consumerConnection)
+			}
+
+			if consumerChannel != nil {
+				defer checkClose(t, "consume channel", consumerChannel)
+			}
+
 			if err != nil {
 				t.Fatalf("consume: %v", err)
 			}
@@ -299,7 +305,7 @@ func TestAMQPRetry(t *testing.T) {
 			if err := output.Connect(); err != nil {
 				t.Fatal(err)
 			}
-			defer checkClose(t, "output close:", output)
+			defer checkClose(t, "output", output)
 
 			// publish event batches
 			var signals int64
@@ -339,10 +345,9 @@ func TestAMQPRetry(t *testing.T) {
 }
 
 func checkClose(t *testing.T, prefix string, c io.Closer) {
-	if c != nil {
-		if err := c.Close(); err != nil {
-			t.Logf(prefix+" %v", err)
-		}
+	t.Logf("closing %s ...", prefix)
+	if err := c.Close(); err != nil {
+		t.Fatalf("%s close: %v", prefix, err)
 	}
 }
 
