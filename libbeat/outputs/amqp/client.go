@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -47,7 +48,7 @@ type client struct {
 	contentType             string
 	dialURL                 string
 	tlsConfig               *tls.Config
-	dialTimeout             time.Duration
+	dialFunc                func(network, addr string) (net.Conn, error)
 	exchangeDeclare         exchangeDeclareConfig
 	exchangeNameSelector    outil.Selector
 	deliveryMode            uint8
@@ -99,7 +100,7 @@ func newClient(
 		codecConfig:             codecConfig,
 		dialURL:                 dialURL,
 		tlsConfig:               tlsConfig,
-		dialTimeout:             dialTimeout,
+		dialFunc:                amqp.DefaultDial(dialTimeout),
 		exchangeNameSelector:    exchangeName,
 		exchangeDeclare:         exchangeDeclare,
 		routingKeySelector:      routingKey,
@@ -242,7 +243,7 @@ func (c *client) dial() (*amqp.Connection, error) {
 		FrameSize:       c.frameSize,
 		Heartbeat:       c.heartbeat,
 		TLSClientConfig: c.tlsConfig,
-		Dial:            amqp.DefaultDial(c.dialTimeout),
+		Dial:            c.dialFunc,
 	})
 }
 
