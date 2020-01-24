@@ -160,12 +160,14 @@ func TestAMQPPublish(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			grp, err := makeAMQP(nil, beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
 			if err != nil {
-				t.Fatalf("makeAMQP: %v", err)
+				t.Errorf("makeAMQP: %v", err)
+				return
 			}
 
 			output := grp.Clients[0].(*client)
 			if err := output.Connect(); err != nil {
-				t.Fatalf("output.Connect: %v", err)
+				t.Errorf("output.Connect: %v", err)
+				return
 			}
 			defer checkClose(t, "output", output)
 
@@ -194,7 +196,9 @@ func TestAMQPPublish(t *testing.T) {
 			}
 
 			if err != nil {
-				t.Fatalf("consume: %v", err)
+				fmt.Printf("testConsume(%v): %v\n", name, err)
+				t.Errorf("consume: %v", err)
+				return
 			}
 
 			// publish event batches
@@ -344,10 +348,13 @@ func TestAMQPRetry(t *testing.T) {
 	}
 }
 
-func checkClose(t *testing.T, prefix string, c io.Closer) {
-	t.Logf("closing %s ...", prefix)
+func checkClose(t *testing.T, name string, c io.Closer) {
+	fmt.Printf("closing %s ...\n", name)
 	if err := c.Close(); err != nil {
-		t.Fatalf("%s close: %v", prefix, err)
+		fmt.Printf("close %s error: %v\n", name, err)
+		t.Errorf("%s close: %v", name, err)
+	} else {
+		fmt.Printf("%s closed\n", name)
 	}
 }
 
@@ -360,34 +367,34 @@ func testConsume(t *testing.T, url, exchange, kind, binding, queue, consumer, ke
 
 	connection, err := amqp.Dial(url)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("consumer: dial: %v", err)
+		return nil, nil, nil, fmt.Errorf("test consumer: dial: %v", err)
 	}
-	go logErrors(t, "consumer: connection error: ", connection.NotifyClose(make(chan *amqp.Error)))
+	go logErrors(t, "test consumer: connection error: ", connection.NotifyClose(make(chan *amqp.Error)))
 
 	channel, err := connection.Channel()
 	if err != nil {
-		return nil, connection, nil, fmt.Errorf("consumer: channel: %v", err)
+		return nil, connection, nil, fmt.Errorf("test consumer: channel: %v", err)
 	}
-	go logErrors(t, "consumer: channel error: ", channel.NotifyClose(make(chan *amqp.Error)))
+	go logErrors(t, "test consumer: channel error: ", channel.NotifyClose(make(chan *amqp.Error)))
 
 	_, err = channel.QueueDeclare(queue, false, true, false, false, nil)
 	if err != nil {
-		return nil, connection, channel, fmt.Errorf("consumer: queue declare: %v", err)
+		return nil, connection, channel, fmt.Errorf("test consumer: queue declare: %v", err)
 	}
 
 	err = channel.ExchangeDeclare(exchange, kind, exchangeDurable, exchangeAutoDelete, exchangeInternal, false, nil)
 	if err != nil {
-		return nil, connection, channel, fmt.Errorf("consumer: exchange declare: %v", err)
+		return nil, connection, channel, fmt.Errorf("test consumer: exchange declare: %v", err)
 	}
 
 	channel.QueueBind(binding, key, exchange, false, nil)
 	if err != nil {
-		return nil, connection, channel, fmt.Errorf("consumer: queue bind: %v", err)
+		return nil, connection, channel, fmt.Errorf("test consumer: queue bind: %v", err)
 	}
 
 	deliveries, err := channel.Consume(queue, consumer, true, false, false, false, nil)
 	if err != nil {
-		return nil, connection, channel, fmt.Errorf("consumer: consume: %v", err)
+		return nil, connection, channel, fmt.Errorf("test consumer: consume: %v", err)
 	}
 
 	return deliveries, connection, channel, nil
