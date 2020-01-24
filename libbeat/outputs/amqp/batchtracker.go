@@ -96,6 +96,7 @@ func (b *batchTracker) retryEvent(event publisher.Event) {
 func (b *batchTracker) countEvent() {
 	count := atomic.AddUint64(&b.counter, 1)
 	if count != b.total {
+		b.logger.Debugf("batch events counted: %d/%d", count, b.total)
 		return
 	}
 	b.finalize()
