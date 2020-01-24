@@ -68,7 +68,7 @@ type client struct {
 
 	incomingEvents chan eventTracker
 	outgoingEvents chan preparedEvent
-	outgoingCancel context.CancelFunc
+	cancel         context.CancelFunc
 }
 
 func newClient(
@@ -146,7 +146,7 @@ func (c *client) Connect() error {
 	c.incomingEvents = make(chan eventTracker)
 	c.outgoingEvents = make(chan preparedEvent)
 	ctx, cancel := context.WithCancel(context.Background())
-	c.outgoingCancel = cancel
+	c.cancel = cancel
 
 	if err := c.startRoutines(ctx); err != nil {
 		c.closeLock.RUnlock()
@@ -196,8 +196,9 @@ func (c *client) Close() error {
 	}
 
 	c.closed = true
-	if c.outgoingCancel != nil {
-		c.outgoingCancel()
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
 	}
 
 	if c.incomingEvents != nil {
@@ -254,14 +255,14 @@ func (c *client) startRoutines(ctx context.Context) error {
 		return fmt.Errorf("start outgoing events: %v", err)
 	}
 
-	if err := c.startHandlingIncomingEvents(); err != nil {
+	if err := c.startHandlingIncomingEvents(ctx); err != nil {
 		return fmt.Errorf("start incoming events: %v", err)
 	}
 
 	return nil
 }
 
-func (c *client) startHandlingIncomingEvents() error {
+func (c *client) startHandlingIncomingEvents(ctx context.Context) error {
 	if c.incomingEvents == nil {
 		return errors.New("incoming events channel is nil")
 	}
@@ -285,7 +286,7 @@ func (c *client) startHandlingIncomingEvents() error {
 		}
 
 		wg.Add(1)
-		go c.handleIncomingEvents(i, encoder, &wg)
+		go c.handleIncomingEvents(ctx, i, encoder, &wg)
 	}
 
 	go c.finalizeIncomingEventHandlers(&wg)
@@ -301,8 +302,9 @@ func (c *client) finalizeIncomingEventHandlers(wg *sync.WaitGroup) {
 }
 
 // handleIncomingEvents prepares incoming events for publishing and places them
-// on an outgoing events queue.
-func (c *client) handleIncomingEvents(workerId uint64, encoder codec.Codec, wg *sync.WaitGroup) {
+// on an outgoing events queue until either incomingEvents is closed to ctx is
+// cancelled.
+func (c *client) handleIncomingEvents(ctx context.Context, workerId uint64, encoder codec.Codec, wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer c.logger.Debugf("incoming event worker %v finished", workerId)
 	c.logger.Debugf("incoming event worker %v starting", workerId)
@@ -314,7 +316,12 @@ func (c *client) handleIncomingEvents(workerId uint64, encoder codec.Codec, wg *
 			continue
 		}
 
-		c.outgoingEvents <- *prepared
+		select {
+		case <-ctx.Done():
+			c.logger.Debugf("incoming event worker %v context done", workerId)
+			return
+		case c.outgoingEvents <- *prepared:
+		}
 	}
 }
 
