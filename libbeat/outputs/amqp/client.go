@@ -242,20 +242,7 @@ func (c *client) dial() (*amqp.Connection, error) {
 		FrameSize:       c.frameSize,
 		Heartbeat:       c.heartbeat,
 		TLSClientConfig: c.tlsConfig,
-		Dial: func(network string, addr string) (net.Conn, error) {
-			// this conn function copied from amqp library (it's not exported to reuse/modify)
-			conn, err := net.DialTimeout(network, addr, c.dialTimeout)
-			if err != nil {
-				return nil, err
-			}
-
-			// Heartbeating hasn't started yet, don't stall forever on a dead server.
-			if err := conn.SetReadDeadline(time.Now().Add(c.dialTimeout)); err != nil {
-				return nil, err
-			}
-
-			return conn, nil
-		},
+		Dial:            amqp.DefaultDial(c.dialTimeout),
 	})
 }
 
