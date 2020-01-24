@@ -78,7 +78,6 @@ type eventPublisher struct {
 // done blocks until eventPublisher has finished. The first error found on the
 // internal doneChan will be returned, if any.
 func (e *eventPublisher) done() (err error) {
-	defer e.logger.Debugf("eventPublisher finished")
 	for e := range e.doneChan {
 		if e != nil && err == nil {
 			err = e
@@ -106,7 +105,8 @@ func (e *eventPublisher) confirmWorker() {
 	for pending := range e.pendingChan {
 		pendingCounter++
 
-		_, ret, err := getNextConfirmation(e.logger, pending, e.returnChan, e.confirmationChan)
+		e.logger.Debugf("confirmWorker waiting for confirmation delivery tag: %d", pending.deliveryTag)
+		confirmation, ret, err := getNextConfirmation(e.logger, pending, e.returnChan, e.confirmationChan)
 
 		if err != nil {
 			// drain and retry everything on pendingChan, but only log once
@@ -128,10 +128,12 @@ func (e *eventPublisher) confirmWorker() {
 		}
 
 		confirmCounter++
+		e.logger.Debugf("confirmWorker confirming delivery tag: %d", confirmation.DeliveryTag)
 		pending.confirm()
+		e.logger.Debugf("confirmWorker delivery tag confirmed: %d", confirmation.DeliveryTag)
 	}
 
-	e.logger.Debugf("confirmWorker finished, processed %v pending publishes, retries: %v, confirms: %v", pendingCounter, retryCounter, confirmCounter)
+	e.logger.Debugf("confirmWorker finished (pendingChan closed), processed %v pending publishes, retries: %v, confirms: %v", pendingCounter, retryCounter, confirmCounter)
 }
 
 // publishWorker attempts to publish the contents of preparedEvents to the
@@ -157,6 +159,7 @@ func (e *eventPublisher) publishWorker() {
 			return
 		}
 
+		e.logger.Debugf("publishWorker publishing to exchange: %s, routing key: %s, message id: %s, previous delivery tag: %d", event.exchangeName, event.routingKey, event.outgoingPublishing.MessageId, e.deliveryTag)
 		if err := e.channel.Publish(
 			event.exchangeName,
 			event.routingKey,
@@ -169,16 +172,21 @@ func (e *eventPublisher) publishWorker() {
 			// publisher, but only after signalling to the batch that the event
 			// should be retried (since it's no longer on the preparedEvents
 			// channel).
-			event.incomingEvent.batchTracker.retryEvent(event.incomingEvent.event)
 			e.logger.Errorf("AMQP publish error: %v", err)
+			event.incomingEvent.batchTracker.retryEvent(event.incomingEvent.event)
 			e.doneChan <- err
 			return
 		}
 
 		e.deliveryTag++
+
+		e.logger.Debugf("publishWorker enqueueing pending delivery tag: %d", e.deliveryTag)
 		e.pendingChan <- pendingPublish{
 			event:       event,
 			deliveryTag: e.deliveryTag,
 		}
+		e.logger.Debugf("publishWorker enqueued pending delivery tag: %d", e.deliveryTag)
 	}
+
+	e.logger.Debugf("publishWorker: preparedEvents chan closed")
 }
