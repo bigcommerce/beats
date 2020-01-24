@@ -18,13 +18,14 @@
 package amqp
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
+	"github.com/elastic/beats/libbeat/common/backoff"
 	"github.com/elastic/beats/libbeat/publisher"
 
 	"github.com/gofrs/uuid"
@@ -66,6 +67,7 @@ type client struct {
 
 	incomingEvents chan eventTracker
 	outgoingEvents chan preparedEvent
+	outgoingCancel context.CancelFunc
 }
 
 func newClient(
@@ -142,8 +144,10 @@ func (c *client) Connect() error {
 
 	c.incomingEvents = make(chan eventTracker)
 	c.outgoingEvents = make(chan preparedEvent)
+	ctx, cancel := context.WithCancel(context.Background())
+	c.outgoingCancel = cancel
 
-	if err := c.startRoutines(); err != nil {
+	if err := c.startRoutines(ctx); err != nil {
 		c.closeLock.RUnlock()
 		if closeErr := c.Close(); closeErr != nil {
 			c.logger.Errorf("post-connect-error close error: %v", closeErr)
@@ -191,6 +195,10 @@ func (c *client) Close() error {
 	}
 
 	c.closed = true
+	if c.outgoingCancel != nil {
+		c.outgoingCancel()
+	}
+
 	if c.incomingEvents != nil {
 		c.logger.Debugf("closing incoming events channel")
 		close(c.incomingEvents)
@@ -253,8 +261,8 @@ func (c *client) dial() (*amqp.Connection, error) {
 
 // startRoutines starts any goroutine-based workers. The first error (if any)
 // from child-routine-start functions is returned.
-func (c *client) startRoutines() error {
-	if err := c.startHandlingOutgoingEvents(); err != nil {
+func (c *client) startRoutines(ctx context.Context) error {
+	if err := c.startHandlingOutgoingEvents(ctx); err != nil {
 		return fmt.Errorf("start outgoing events: %v", err)
 	}
 
@@ -322,7 +330,7 @@ func (c *client) handleIncomingEvents(workerId uint64, encoder codec.Codec, wg *
 	}
 }
 
-func (c *client) startHandlingOutgoingEvents() error {
+func (c *client) startHandlingOutgoingEvents(ctx context.Context) error {
 	if c.outgoingEvents == nil {
 		return errors.New("outgoingEvents channel is nil")
 	}
@@ -332,32 +340,54 @@ func (c *client) startHandlingOutgoingEvents() error {
 	// "Channels are not supposed to be shared for concurrent publishing (in this client and in general)."
 	// this should not support concurrency: https://github.com/streadway/amqp/issues/208#issuecomment-244160130
 	c.closeWaitGroup.Add(1)
-	go c.handleOutgoingEvents()
+	go c.handleOutgoingEvents(ctx)
 
 	return nil
 }
 
-func (c *client) handleOutgoingEvents() {
+// handleOutgoingEvents is the primary point of lifecycle management for
+// publishing to RabbitMQ.
+//
+// Under normal conditions, handleOutgoingEvents connects to RabbitMQ, creates a
+// RabbitMQ channel, and passes messages from c.outgoingEvents to RabbitMQ until
+// c.outgoingEvents is closed.
+//
+// Most errors cause a connection and channel re-establishment, unless the
+// provided context is cancelled.
+//
+// Closure of outgoingEvents is the graceful shutdown condition. Context
+// cancellation will only prevent new Dial attempts.
+func (c *client) handleOutgoingEvents(ctx context.Context) {
 	defer c.closeWaitGroup.Done()
-	defer c.logger.Debugf("outgoing event worker finished")
-	c.logger.Debugf("outgoing event worker started")
+	defer c.logger.Debug("outgoing event worker finished")
+	c.logger.Debug("outgoing event worker started")
 
 	var declarer exchangeDeclarer
 	if c.exchangeDeclare.Enabled {
 		declarer = c.declareExchange
 	} else {
-		c.logger.Infof("exchange declaration not enabled in config")
+		c.logger.Info("exchange declaration not enabled in config")
 		declarer = func(_ amqpChannel, _ string) error { return nil }
 	}
 
+	backoffDone := make(chan struct{})
+	connectionBackoff := backoff.NewExpBackoff(backoffDone, 1*time.Second, 1*time.Minute)
+	defer close(backoffDone)
+
 	// TODO: consider moving these loop innards into functions so we can use `defer` to better handle Close() calls
 	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Debug("outgoing event worker: context done")
+			return
+		default:
+		}
+
 		connection, err := c.dial()
 		if err != nil {
-			// For now, consider dial failures as permanent, though we could
-			// do some limited retries here if filebeat won't do that.
 			c.logger.Errorf("dial: %v", err)
-			return
+			connectionBackoff.Wait()
+			continue
 		}
 
 		for {
@@ -382,6 +412,8 @@ func (c *client) handleOutgoingEvents() {
 				}
 				continue
 			}
+
+			connectionBackoff.Reset()
 
 			err = eventPublisher.done()
 
@@ -410,6 +442,7 @@ func (c *client) handleOutgoingEvents() {
 		if closeError := connection.Close(); closeError != nil {
 			c.logger.Errorf("publisher: connection close error: %v", closeError)
 		}
+		connectionBackoff.Wait()
 	}
 }
 
