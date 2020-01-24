@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"os"
 	"strconv"
 	"sync"
@@ -53,6 +54,69 @@ const (
 
 type eventInfo struct {
 	events []beat.Event
+}
+
+func TestAMQPRetryOnDialError(t *testing.T) {
+	logp.TestingSetup(logp.WithSelectors("amqp"))
+
+	id := strconv.Itoa(rand.New(rand.NewSource(int64(time.Now().Nanosecond()))).Int())
+
+	defaultConfig := map[string]interface{}{
+		"hosts":       []string{"amqp://foo.invalid:5672"},
+		"exchange":    fmt.Sprintf("test-libbeat-%s", id),
+		"routing_key": fmt.Sprintf("test-libbeat-%s", id),
+		"exchange_declare": map[string]interface{}{
+			"enabled":     true,
+			"kind":        "direct",
+			"auto_delete": true,
+		},
+	}
+
+	cfg := makeConfig(t, defaultConfig)
+
+	grp, err := makeAMQP(nil, beat.Info{Beat: "libbeat"}, outputs.NewNilObserver(), cfg)
+	if err != nil {
+		t.Fatalf("makeAMQP: %v", err)
+	}
+
+	output := grp.Clients[0].(*client)
+
+	expectedDials := 3
+	dials := 0
+	dialWG := &sync.WaitGroup{}
+	dialWG.Add(expectedDials)
+	output.dialFunc = func(network, addr string) (net.Conn, error) {
+		fmt.Printf("mock dial called\n")
+		dials++
+		dialWG.Done()
+		return nil, fmt.Errorf("mock dial failure")
+	}
+
+	if err := output.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer checkClose(t, "output", output)
+
+	batch := outest.NewBatch(single(common.MapStr{
+		messageField: id,
+	})[0].events...)
+
+	batch.OnSignal = func(signal outest.BatchSignal) {
+		// defer batchesWaitGroup.Done()
+		// if signal.Tag == outest.BatchACK {
+		// 	t.Logf("batch %v ACKed", batchId)
+		// } else {
+		// 	t.Errorf("batch %v was not ACKed, actual signal was: %v, returned events len: %v", batchId, signal.Tag, len(signal.Events))
+		// }
+		t.Logf("batch signal: %#v", signal)
+	}
+
+	if err := output.Publish(batch); err != nil {
+		t.Fatal(err)
+	}
+
+	dialWG.Wait()
+	assert.Equal(t, expectedDials, dials)
 }
 
 func TestAMQPPublish(t *testing.T) {
