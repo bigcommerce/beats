@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/elastic/beats/libbeat/common"
 	"net"
 	"sync"
 	"time"
@@ -55,6 +56,7 @@ type client struct {
 	immediatePublish        bool
 	mandatoryPublish        bool
 	routingKeySelector      outil.Selector
+	headersKey              string
 	redactedURL             string
 	eventPrepareConcurrency uint64
 	publishBuffersSize      uint64
@@ -83,6 +85,7 @@ func newClient(
 	routingKey outil.Selector,
 	persistentDeliveryMode bool,
 	contentType string,
+	headersKey string,
 	mandatoryPublish bool,
 	immediatePublish bool,
 	eventPrepareConcurrency uint64,
@@ -106,6 +109,7 @@ func newClient(
 		routingKeySelector:      routingKey,
 		deliveryMode:            getDeliveryMode(persistentDeliveryMode),
 		contentType:             contentType,
+		headersKey:              headersKey,
 		mandatoryPublish:        mandatoryPublish,
 		immediatePublish:        immediatePublish,
 		eventPrepareConcurrency: eventPrepareConcurrency,
@@ -467,6 +471,8 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 	}
 	c.logger.Debugf("calculated routing key: %v", routingKey)
 
+	headers := c.getHeaders(content)
+
 	body, err := c.encodeEvent(codec, content)
 	if err != nil {
 		return nil, fmt.Errorf("encode: %v", err)
@@ -487,8 +493,30 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 			ContentType:  c.contentType,
 			Body:         body,
 			MessageId:    messageID.String(),
+			Headers:      headers,
 		},
 	}, nil
+}
+
+// Extract headers from given event, return nil on failure
+func (c *client) getHeaders(content *beat.Event) amqp.Table {
+	if c.headersKey == "" {
+		return nil
+	}
+
+	c.logger.Debugf("Using headers key: %v", c.headersKey)
+
+	value, err := content.Fields.GetValue(c.headersKey)
+	if err != nil {
+		c.logger.Debugf("Error fetch headers with key %v: %v", c.headersKey, err)
+		return nil
+	}
+
+	if headers, ok := value.(common.MapStr); ok {
+		return amqp.Table(headers)
+	}
+
+	return nil
 }
 
 // encodeEvent serializes a given event using the given encoder according to the

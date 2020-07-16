@@ -22,6 +22,7 @@ package amqp
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"math/rand"
 	"net"
@@ -32,14 +33,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/streadway/amqp"
-	"github.com/stretchr/testify/assert"
-
 	"github.com/elastic/beats/libbeat/beat"
 	"github.com/elastic/beats/libbeat/common"
 	"github.com/elastic/beats/libbeat/logp"
 	"github.com/elastic/beats/libbeat/outputs"
 	"github.com/elastic/beats/libbeat/outputs/outest"
+	"github.com/streadway/amqp"
 
 	_ "github.com/elastic/beats/libbeat/outputs/codec/format"
 	_ "github.com/elastic/beats/libbeat/outputs/codec/json"
@@ -199,6 +198,38 @@ func TestAMQPPublish(t *testing.T) {
 				"foo": testRoutingKey + "-select",
 			}),
 		},
+		{
+			"single event to selected exchange with headers",
+			map[string]interface{}{
+				"exchange":    "%{[foo]}",
+				"headers_key": "headers",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			single(common.MapStr{
+				"foo": testExchange + "-select",
+				"headers": common.MapStr{
+					"content-type": "application/grpc+json",
+				},
+				messageField: id,
+			}),
+		},
+		{
+			"single event to selected exchange ignoring headers",
+			map[string]interface{}{
+				"exchange": "%{[foo]}",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			single(common.MapStr{
+				"foo": testExchange + "-select",
+				// headers_key not configured, so headers will be ignored
+				"headers": common.MapStr{
+					"content-type": "application/grpc+json",
+				},
+				messageField: id,
+			}),
+		},
 	}
 
 	defaultConfig := map[string]interface{}{
@@ -295,16 +326,33 @@ func TestAMQPPublish(t *testing.T) {
 				t.Logf("stopped consuming after %v timeout", consumerTimeout)
 			}
 
-			//////
+			flattenedEvents := flattenTestEvents(test.events)
+			flattenedDeliveries := flattenDeliveries(t, deliveries)
 
-			flattenedMessages := countTestEvents(test.events)
-			flattenedDeliveries := countDeliveries(t, deliveries)
+			assert.Lenf(t, flattenedDeliveries, len(flattenedEvents), "delivered message count differs from test message count")
 
-			assert.Lenf(t, flattenedDeliveries, len(flattenedMessages), "delivered message count differs from test message count")
-
-			for message, count := range flattenedMessages {
-				deliveredCount, _ := flattenedDeliveries[message]
+			for message, events := range flattenedEvents {
+				deliveries, _ := flattenedDeliveries[message]
+				count := len(events)
+				deliveredCount := len(deliveries)
 				assert.Equalf(t, count, deliveredCount, "mismatch in count for message, test count: %v, delivered count: %v, message: %v", count, deliveredCount, message)
+
+				if count == 0 {
+					continue
+				}
+
+				// Only verifying headers of the first message since we have the same headers configured for all
+				firstDelivery := deliveries[0]
+				if headersKey, err := cfg.String("headers_key", 0); err == nil {
+					firstEvent := events[0]
+					headersValue, _ := firstEvent.Fields.GetValue(headersKey)
+					expectedHeaders := amqp.Table(headersValue.(common.MapStr))
+
+					assert.Equal(t, expectedHeaders, firstDelivery.Headers, "Mismatched headers found for message: %v", events)
+				} else {
+					headersCount := len(firstDelivery.Headers)
+					assert.Equalf(t, 0, headersCount, "Unexpected headers found in delivered message: %v, headers count: %v", message, headersCount)
+				}
 			}
 		})
 	}
@@ -531,29 +579,29 @@ func getTestAMQPURL() string {
 	return getenv("AMQP_URL", amqpDefaultURL)
 }
 
-func countTestEvents(infos []eventInfo) map[string]uint64 {
-	out := map[string]uint64{}
+func flattenTestEvents(infos []eventInfo) map[string][]*beat.Event {
+	out := map[string][]*beat.Event{}
 	for _, info := range infos {
 		for _, event := range info.events {
 			message := event.Fields[messageField].(string)
 			if _, found := out[message]; found {
-				out[message]++
+				out[message] = append(out[message], &event)
 			} else {
-				out[message] = 1
+				out[message] = []*beat.Event{&event}
 			}
 		}
 	}
 	return out
 }
 
-func countDeliveries(t *testing.T, deliveries []amqp.Delivery) map[string]uint64 {
-	out := map[string]uint64{}
+func flattenDeliveries(t *testing.T, deliveries []amqp.Delivery) map[string][]*amqp.Delivery {
+	out := map[string][]*amqp.Delivery{}
 	for _, delivery := range deliveries {
 		message := decodeMessage(t, delivery.Body)
 		if _, found := out[message]; found {
-			out[message]++
+			out[message] = append(out[message], &delivery)
 		} else {
-			out[message] = 1
+			out[message] = []*amqp.Delivery{&delivery}
 		}
 	}
 	return out
