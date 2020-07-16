@@ -22,7 +22,6 @@ package amqp
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"io"
 	"math/rand"
 	"net"
@@ -39,6 +38,7 @@ import (
 	"github.com/elastic/beats/libbeat/outputs"
 	"github.com/elastic/beats/libbeat/outputs/outest"
 	"github.com/streadway/amqp"
+	"github.com/stretchr/testify/assert"
 
 	_ "github.com/elastic/beats/libbeat/outputs/codec/format"
 	_ "github.com/elastic/beats/libbeat/outputs/codec/json"
@@ -130,11 +130,12 @@ func TestAMQPPublish(t *testing.T) {
 	testBinding := fmt.Sprintf("test-libbeat-%s", id)
 
 	tests := []struct {
-		title      string
-		config     map[string]interface{}
-		exchange   string
-		routingKey string
-		events     []eventInfo
+		title           string
+		config          map[string]interface{}
+		exchange        string
+		routingKey      string
+		events          []eventInfo
+		expectedHeaders amqp.Table
 	}{
 		{
 			"single event",
@@ -144,6 +145,7 @@ func TestAMQPPublish(t *testing.T) {
 			single(common.MapStr{
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"single event to selected exchange",
@@ -156,6 +158,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo":        testExchange + "-select",
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"single event to selected routing key",
@@ -168,6 +171,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo":        testRoutingKey + "-select",
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"batch publish",
@@ -175,6 +179,7 @@ func TestAMQPPublish(t *testing.T) {
 			testExchange,
 			testRoutingKey,
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
+			nil,
 		},
 		{
 			"batch publish to selected exchange",
@@ -186,6 +191,7 @@ func TestAMQPPublish(t *testing.T) {
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testExchange + "-select",
 			}),
+			nil,
 		},
 		{
 			"batch publish to selected routing key",
@@ -197,6 +203,7 @@ func TestAMQPPublish(t *testing.T) {
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testRoutingKey + "-select",
 			}),
+			nil,
 		},
 		{
 			"single event to selected exchange with headers",
@@ -213,6 +220,9 @@ func TestAMQPPublish(t *testing.T) {
 				},
 				messageField: id,
 			}),
+			amqp.Table{
+				"content-type": "application/grpc+json",
+			},
 		},
 		{
 			"single event to selected exchange ignoring headers",
@@ -229,6 +239,7 @@ func TestAMQPPublish(t *testing.T) {
 				},
 				messageField: id,
 			}),
+			nil,
 		},
 	}
 
@@ -326,33 +337,20 @@ func TestAMQPPublish(t *testing.T) {
 				t.Logf("stopped consuming after %v timeout", consumerTimeout)
 			}
 
-			flattenedEvents := flattenTestEvents(test.events)
-			flattenedDeliveries := flattenDeliveries(t, deliveries)
+			//////
 
-			assert.Lenf(t, flattenedDeliveries, len(flattenedEvents), "delivered message count differs from test message count")
+			flattenedMessages := countTestEvents(test.events)
+			flattenedDeliveries := countDeliveries(t, deliveries)
 
-			for message, events := range flattenedEvents {
-				deliveries, _ := flattenedDeliveries[message]
-				count := len(events)
-				deliveredCount := len(deliveries)
+			assert.Lenf(t, flattenedDeliveries, len(flattenedMessages), "delivered message count differs from test message count")
+
+			for message, count := range flattenedMessages {
+				deliveredCount, _ := flattenedDeliveries[message]
 				assert.Equalf(t, count, deliveredCount, "mismatch in count for message, test count: %v, delivered count: %v, message: %v", count, deliveredCount, message)
+			}
 
-				if count == 0 {
-					continue
-				}
-
-				// Only verifying headers of the first message since we have the same headers configured for all
-				firstDelivery := deliveries[0]
-				if headersKey, err := cfg.String("headers_key", 0); err == nil {
-					firstEvent := events[0]
-					headersValue, _ := firstEvent.Fields.GetValue(headersKey)
-					expectedHeaders := amqp.Table(headersValue.(common.MapStr))
-
-					assert.Equal(t, expectedHeaders, firstDelivery.Headers, "Mismatched headers found for message: %v", events)
-				} else {
-					headersCount := len(firstDelivery.Headers)
-					assert.Equalf(t, 0, headersCount, "Unexpected headers found in delivered message: %v, headers count: %v", message, headersCount)
-				}
+			for _, delivery := range deliveries {
+				assert.Equalf(t, test.expectedHeaders, delivery.Headers, "mismatched headers for message, expected: %v,  delivered: %v", test.expectedHeaders, delivery.Headers)
 			}
 		})
 	}
@@ -579,29 +577,29 @@ func getTestAMQPURL() string {
 	return getenv("AMQP_URL", amqpDefaultURL)
 }
 
-func flattenTestEvents(infos []eventInfo) map[string][]*beat.Event {
-	out := map[string][]*beat.Event{}
+func countTestEvents(infos []eventInfo) map[string]uint64 {
+	out := map[string]uint64{}
 	for _, info := range infos {
 		for _, event := range info.events {
 			message := event.Fields[messageField].(string)
 			if _, found := out[message]; found {
-				out[message] = append(out[message], &event)
+				out[message]++
 			} else {
-				out[message] = []*beat.Event{&event}
+				out[message] = 1
 			}
 		}
 	}
 	return out
 }
 
-func flattenDeliveries(t *testing.T, deliveries []amqp.Delivery) map[string][]*amqp.Delivery {
-	out := map[string][]*amqp.Delivery{}
+func countDeliveries(t *testing.T, deliveries []amqp.Delivery) map[string]uint64 {
+	out := map[string]uint64{}
 	for _, delivery := range deliveries {
 		message := decodeMessage(t, delivery.Body)
 		if _, found := out[message]; found {
-			out[message] = append(out[message], &delivery)
+			out[message]++
 		} else {
-			out[message] = []*amqp.Delivery{&delivery}
+			out[message] = 1
 		}
 	}
 	return out
