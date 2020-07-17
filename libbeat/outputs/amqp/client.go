@@ -22,10 +22,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/elastic/beats/libbeat/common"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/elastic/beats/libbeat/common"
 
 	"github.com/elastic/beats/libbeat/common/backoff"
 	"github.com/elastic/beats/libbeat/publisher"
