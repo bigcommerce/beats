@@ -22,11 +22,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/elastic/beats/libbeat/common"
 	"net"
 	"sync"
 	"time"
-
-	"github.com/elastic/beats/libbeat/common"
 
 	"github.com/elastic/beats/libbeat/common/backoff"
 	"github.com/elastic/beats/libbeat/publisher"
@@ -472,7 +471,10 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 	}
 	c.logger.Debugf("calculated routing key: %v", routingKey)
 
-	headers := c.getHeaders(content)
+	headers, err := c.getHeaders(content)
+	if err != nil {
+		return nil, fmt.Errorf("headers: %v", err)
+	}
 
 	body, err := c.encodeEvent(codec, content)
 	if err != nil {
@@ -499,25 +501,25 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 	}, nil
 }
 
-// Extract headers from given event, return nil on failure
-func (c *client) getHeaders(content *beat.Event) amqp.Table {
+// Extract headers from given event, return nil if headers key is unspecified
+func (c *client) getHeaders(content *beat.Event) (amqp.Table, error) {
 	if c.headersKey == "" {
-		return nil
+		return nil, nil
 	}
 
-	c.logger.Debugf("Using headers key: %v", c.headersKey)
+	c.logger.Debugf("using headers key: %v", c.headersKey)
 
 	value, err := content.Fields.GetValue(c.headersKey)
 	if err != nil {
-		c.logger.Debugf("Error fetch headers with key %v: %v", c.headersKey, err)
-		return nil
+		c.logger.Debugf("error fetch headers with key %v: %v", c.headersKey, err)
+		return nil, err
 	}
 
-	if headers, ok := value.(common.MapStr); ok {
-		return amqp.Table(headers)
+	headers, ok := value.(common.MapStr)
+	if !ok {
+		return nil, fmt.Errorf("unexpected data type for headers: %T", value)
 	}
-
-	return nil
+	return amqp.Table(headers), nil
 }
 
 // encodeEvent serializes a given event using the given encoder according to the
