@@ -36,6 +36,7 @@ type amqpConfig struct {
 	ExchangeDeclare         exchangeDeclareConfig `config:"exchange_declare"`
 	PersistentDeliveryMode  bool                  `config:"persistent_delivery_mode"`
 	ContentType             string                `config:"content_type"`
+	HeadersKey              string                `config:"headers_key"`
 	MandatoryPublish        bool                  `config:"mandatory_publish"`
 	ImmediatePublish        bool                  `config:"immediate_publish"`
 	BulkMaxSize             int                   `config:"bulk_max_size" validate:"min=1"`

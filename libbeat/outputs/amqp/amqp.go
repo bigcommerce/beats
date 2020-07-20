@@ -100,6 +100,7 @@ func makeAMQP(
 			routingKeySelector,
 			config.PersistentDeliveryMode,
 			config.ContentType,
+			config.HeadersKey,
 			config.MandatoryPublish,
 			config.ImmediatePublish,
 			config.EventPrepareConcurrency,

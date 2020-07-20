@@ -131,11 +131,12 @@ func TestAMQPPublish(t *testing.T) {
 	testBinding := fmt.Sprintf("test-libbeat-%s", id)
 
 	tests := []struct {
-		title      string
-		config     map[string]interface{}
-		exchange   string
-		routingKey string
-		events     []eventInfo
+		title           string
+		config          map[string]interface{}
+		exchange        string
+		routingKey      string
+		events          []eventInfo
+		expectedHeaders amqp.Table
 	}{
 		{
 			"single event",
@@ -145,6 +146,7 @@ func TestAMQPPublish(t *testing.T) {
 			single(common.MapStr{
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"single event to selected exchange",
@@ -157,6 +159,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo":        testExchange + "-select",
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"single event to selected routing key",
@@ -169,6 +172,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo":        testRoutingKey + "-select",
 				messageField: id,
 			}),
+			nil,
 		},
 		{
 			"batch publish",
@@ -176,6 +180,7 @@ func TestAMQPPublish(t *testing.T) {
 			testExchange,
 			testRoutingKey,
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
+			nil,
 		},
 		{
 			"batch publish to selected exchange",
@@ -187,6 +192,7 @@ func TestAMQPPublish(t *testing.T) {
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testExchange + "-select",
 			}),
+			nil,
 		},
 		{
 			"batch publish to selected routing key",
@@ -198,6 +204,43 @@ func TestAMQPPublish(t *testing.T) {
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{
 				"foo": testRoutingKey + "-select",
 			}),
+			nil,
+		},
+		{
+			"single event to selected exchange with headers",
+			map[string]interface{}{
+				"exchange":    "%{[foo]}",
+				"headers_key": "headers",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			single(common.MapStr{
+				"foo": testExchange + "-select",
+				"headers": common.MapStr{
+					"content-type": "application/grpc+json",
+				},
+				messageField: id,
+			}),
+			amqp.Table{
+				"content-type": "application/grpc+json",
+			},
+		},
+		{
+			"single event to selected exchange ignoring headers",
+			map[string]interface{}{
+				"exchange": "%{[foo]}",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			single(common.MapStr{
+				"foo": testExchange + "-select",
+				// headers_key not configured, so headers will be ignored
+				"headers": common.MapStr{
+					"content-type": "application/grpc+json",
+				},
+				messageField: id,
+			}),
+			nil,
 		},
 	}
 
@@ -305,6 +348,10 @@ func TestAMQPPublish(t *testing.T) {
 			for message, count := range flattenedMessages {
 				deliveredCount, _ := flattenedDeliveries[message]
 				assert.Equalf(t, count, deliveredCount, "mismatch in count for message, test count: %v, delivered count: %v, message: %v", count, deliveredCount, message)
+			}
+
+			for _, delivery := range deliveries {
+				assert.Equalf(t, test.expectedHeaders, delivery.Headers, "mismatched headers for message, expected: %v,  delivered: %v", test.expectedHeaders, delivery.Headers)
 			}
 		})
 	}
