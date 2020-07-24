@@ -226,6 +226,20 @@ func TestAMQPPublish(t *testing.T) {
 			},
 		},
 		{
+			"single event to selected exchange with missing headers",
+			map[string]interface{}{
+				"exchange":    "%{[foo]}",
+				"headers_key": "headers",
+			},
+			testExchange + "-select",
+			testRoutingKey,
+			single(common.MapStr{
+				"foo":        testExchange + "-select",
+				messageField: id,
+			}),
+			nil,
+		},
+		{
 			"single event to selected exchange ignoring headers",
 			map[string]interface{}{
 				"exchange": "%{[foo]}",

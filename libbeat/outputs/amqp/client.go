@@ -510,6 +510,12 @@ func (c *client) getHeaders(content *beat.Event) (amqp.Table, error) {
 	c.logger.Debugf("using headers key: %v", c.headersKey)
 
 	value, err := content.Fields.GetValue(c.headersKey)
+
+	// Allowing headers to be missing
+	if err == common.ErrKeyNotFound {
+		return nil, nil
+	}
+
 	if err != nil {
 		c.logger.Debugf("error fetch headers with key %v: %v", c.headersKey, err)
 		return nil, err
