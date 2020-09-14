@@ -230,7 +230,7 @@ func (c *client) Publish(batch publisher.Batch) error {
 
 	// Start tracking this batch and put all of its events into the incoming
 	// events queue.
-	batchTracker := newBatchTracker(batch, c.logger)
+	batchTracker := newBatchTracker(batch, c.observer, c.logger)
 	for _, event := range batch.Events() {
 		c.incomingEvents <- newEventTracker(batchTracker, event)
 	}
@@ -317,6 +317,7 @@ func (c *client) handleIncomingEvents(ctx context.Context, workerId uint64, enco
 		prepared, err := c.prepareEvent(encoder, incomingEvent, time.Now)
 		if err != nil {
 			c.logger.Errorf("event dropped: %v", err)
+			incomingEvent.batchTracker.dropEvent()
 			continue
 		}
 

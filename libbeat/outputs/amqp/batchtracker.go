@@ -18,6 +18,7 @@
 package amqp
 
 import (
+	"github.com/elastic/beats/libbeat/outputs"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -30,17 +31,21 @@ import (
 
 var batchCounter uint64
 
-func newBatchTracker(batch publisher.Batch, parentLogger *logp.Logger) *batchTracker {
+func newBatchTracker(batch publisher.Batch, observer outputs.Observer, parentLogger *logp.Logger) *batchTracker {
 	counter := atomic.AddUint64(&batchCounter, 1)
 	id := time.Now().Format("20060102150405") + "-" + strconv.FormatUint(counter, 10)
 	logger := parentLogger.With("batch_id", id)
 	logger.Debugf("begin tracking batch")
+
+	observer.NewBatch(len(batch.Events()))
+
 	return &batchTracker{
-		id:      id,
-		batch:   batch,
-		total:   uint64(len(batch.Events())),
-		logger:  logger,
-		retries: []publisher.Event{},
+		id:       id,
+		batch:    batch,
+		total:    uint64(len(batch.Events())),
+		logger:   logger,
+		retries:  []publisher.Event{},
+		observer: observer,
 	}
 }
 
@@ -68,6 +73,20 @@ type batchTracker struct {
 
 	// counter is the count of completed events, regardless of success status
 	counter uint64
+
+	// dropped is the count of dropped events
+	dropped uint64
+
+	// observer
+	observer outputs.Observer
+}
+
+// dropEvent counts an event as dropped, and calls countEvent() to increase the
+// internal counter so the current batch can be finalized.
+func (b *batchTracker) dropEvent() {
+	b.logger.Debugf("batch event drop")
+	atomic.AddUint64(&b.dropped, 1)
+	b.countEvent()
 }
 
 // confirmEvent counts an event as successfully completed, though in effect this
@@ -89,7 +108,7 @@ func (b *batchTracker) retryEvent(event publisher.Event) {
 }
 
 // countEvent increments the internal event counter but should not be called
-// externally. Use confirmEvent or retryEvent instead.
+// externally. Use confirmEvent, retryEvent or dropEvent instead.
 //
 // countEvent will finalize the batch once the internal counter reaches the
 // total event count.
@@ -116,4 +135,6 @@ func (b *batchTracker) finalize() {
 
 	b.logger.Debugf("batch completed successfully")
 	b.batch.ACK()
+	b.observer.Dropped(int(b.dropped))
+	b.observer.Acked(int(b.counter - b.dropped))
 }
