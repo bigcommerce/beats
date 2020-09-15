@@ -137,6 +137,9 @@ func TestAMQPPublish(t *testing.T) {
 		routingKey      string
 		events          []eventInfo
 		expectedHeaders amqp.Table
+		// expectedTotalDeliveries specifies the expected number of messages delivered,
+		// set to -1 if all messages are expected to be delivered
+		expectedTotalDeliveries int
 	}{
 		{
 			"single event",
@@ -147,6 +150,7 @@ func TestAMQPPublish(t *testing.T) {
 				messageField: id,
 			}),
 			nil,
+			-1,
 		},
 		{
 			"single event to selected exchange",
@@ -160,6 +164,7 @@ func TestAMQPPublish(t *testing.T) {
 				messageField: id,
 			}),
 			nil,
+			-1,
 		},
 		{
 			"single event to selected routing key",
@@ -173,6 +178,7 @@ func TestAMQPPublish(t *testing.T) {
 				messageField: id,
 			}),
 			nil,
+			-1,
 		},
 		{
 			"batch publish",
@@ -181,6 +187,7 @@ func TestAMQPPublish(t *testing.T) {
 			testRoutingKey,
 			randMulti(defaultBatchCount, defaultBatchSize, common.MapStr{}),
 			nil,
+			-1,
 		},
 		{
 			"batch publish to selected exchange",
@@ -193,6 +200,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo": testExchange + "-select",
 			}),
 			nil,
+			-1,
 		},
 		{
 			"batch publish to selected routing key",
@@ -205,6 +213,7 @@ func TestAMQPPublish(t *testing.T) {
 				"foo": testRoutingKey + "-select",
 			}),
 			nil,
+			-1,
 		},
 		{
 			"single event to selected exchange with headers",
@@ -224,6 +233,7 @@ func TestAMQPPublish(t *testing.T) {
 			amqp.Table{
 				"content-type": "application/grpc+json",
 			},
+			-1,
 		},
 		{
 			"single event to selected exchange with missing headers",
@@ -238,6 +248,7 @@ func TestAMQPPublish(t *testing.T) {
 				messageField: id,
 			}),
 			nil,
+			-1,
 		},
 		{
 			"single event to selected exchange ignoring headers",
@@ -255,6 +266,54 @@ func TestAMQPPublish(t *testing.T) {
 				messageField: id,
 			}),
 			nil,
+			-1,
+		},
+		{
+			"batch with invalid events dropped",
+			map[string]interface{}{
+				"exchange":    "%{[exchange]}",
+				"routing_key": "%{[routing_key]}",
+			},
+			testExchange + "-select",
+			testRoutingKey + "-select",
+			[]eventInfo{
+				{
+					events: []beat.Event{
+						{
+							Timestamp: time.Now(),
+							Fields: common.MapStr{
+								"exchange":    testExchange + "-select",
+								"routing_key": testRoutingKey + "-select",
+								messageField:  id,
+							},
+						},
+						{
+							Timestamp: time.Now(),
+							Fields: common.MapStr{
+								"routing_key": testRoutingKey + "-select",
+								messageField:  "no exchange key",
+							},
+						},
+						{
+							Timestamp: time.Now(),
+							Fields: common.MapStr{
+								"exchange":   testExchange + "-select",
+								messageField: "no routing key",
+							},
+						},
+						{
+							Timestamp: time.Now(),
+							Fields: common.MapStr{
+								"exchange":    testExchange + "-select",
+								"routing_key": testRoutingKey + "-select",
+								messageField:  id,
+							},
+						},
+					},
+				},
+			},
+			nil,
+			2,
 		},
 	}
 
@@ -350,6 +409,13 @@ func TestAMQPPublish(t *testing.T) {
 				t.Logf("WARN: consumer channel closed before timeout, which may indicate a connectivity issue")
 			} else {
 				t.Logf("stopped consuming after %v timeout", consumerTimeout)
+			}
+
+			// Verify the number of messages delivered
+			if test.expectedTotalDeliveries != -1 {
+				deliveredCount := len(deliveries)
+				assert.Equalf(t, test.expectedTotalDeliveries, deliveredCount, "mismatch in count of deliveries , want: %v, delivered count: %v,", test.expectedTotalDeliveries, deliveredCount)
+				return
 			}
 
 			//////

@@ -77,7 +77,7 @@ type batchTracker struct {
 	// dropped is the count of dropped events
 	dropped uint64
 
-	// observer
+	// observer is the interface used by outputs to report common events
 	observer outputs.Observer
 }
 
