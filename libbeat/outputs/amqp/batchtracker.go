@@ -133,7 +133,7 @@ func (b *batchTracker) finalize() {
 		return
 	}
 
-	b.logger.Debugf("batch completed successfully")
+	b.logger.Debugf("batch completed successfully, %v dropped, %v in total", b.dropped, b.counter)
 	b.batch.ACK()
 	b.observer.Dropped(int(b.dropped))
 	b.observer.Acked(int(b.counter - b.dropped))
