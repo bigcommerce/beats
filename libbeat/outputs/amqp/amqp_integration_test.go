@@ -273,6 +273,9 @@ func TestAMQPPublish(t *testing.T) {
 			map[string]interface{}{
 				"exchange":    "%{[exchange]}",
 				"routing_key": "%{[routing_key]}",
+				"codec.format": map[string]string{
+					"string": "%{[message]}",
+				},
 			},
 			testExchange + "-select",
 			testRoutingKey + "-select",
@@ -284,21 +287,21 @@ func TestAMQPPublish(t *testing.T) {
 							Fields: common.MapStr{
 								"exchange":    testExchange + "-select",
 								"routing_key": testRoutingKey + "-select",
-								messageField:  id,
+								messageField:  "{\"message\": \"hello\"}",
 							},
 						},
 						{
 							Timestamp: time.Now(),
 							Fields: common.MapStr{
 								"routing_key": testRoutingKey + "-select",
-								messageField:  "no exchange key",
+								"error":       "Error decoding JSON",
 							},
 						},
 						{
 							Timestamp: time.Now(),
 							Fields: common.MapStr{
-								"exchange":   testExchange + "-select",
-								messageField: "no routing key",
+								"exchange": testExchange + "-select",
+								"error":    "Error decoding JSON",
 							},
 						},
 						{
@@ -306,14 +309,14 @@ func TestAMQPPublish(t *testing.T) {
 							Fields: common.MapStr{
 								"exchange":    testExchange + "-select",
 								"routing_key": testRoutingKey + "-select",
-								messageField:  id,
+								messageField:  "{\"message\": \"hello\"}",
 							},
 						},
 					},
 				},
 			},
 			nil,
-			2,
+			2, // Expecting the two valid events to be published only
 		},
 	}
 

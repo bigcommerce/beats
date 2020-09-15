@@ -464,17 +464,11 @@ func (c *client) prepareEvent(codec codec.Codec, incoming eventTracker, now time
 	if err != nil {
 		return nil, fmt.Errorf("exchange select: %v", err)
 	}
-	if exchangeName == "" {
-		return nil, fmt.Errorf("exchange name is missing")
-	}
 	c.logger.Debugf("calculated exchange name: %v", exchangeName)
 
 	routingKey, err := c.routingKeySelector.Select(content)
 	if err != nil {
 		return nil, fmt.Errorf("routing key select: %v", err)
-	}
-	if routingKey == "" {
-		return nil, fmt.Errorf("routing key is missing")
 	}
 	c.logger.Debugf("calculated routing key: %v", routingKey)
 
