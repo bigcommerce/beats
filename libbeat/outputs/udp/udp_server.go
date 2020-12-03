@@ -9,21 +9,24 @@ import (
 )
 
 type UDPServer struct {
-	ctx      context.Context
-	messages []string
-	address  string
-	mutex    sync.Mutex
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	messages   []string
+	address    string
+	mutex      sync.Mutex
 }
 
 func MakeTestUDPServer(address string) *UDPServer {
 
+	ctx, cancelFunc := context.WithCancel(context.Background())
 	return &UDPServer{address: address,
-		ctx: context.Background(),
+		ctx:        ctx,
+		cancelFunc: cancelFunc,
 	}
 }
 
 func (server *UDPServer) close() {
-	server.ctx.Done()
+	server.cancelFunc()
 }
 
 func (server *UDPServer) getBuffer() string {

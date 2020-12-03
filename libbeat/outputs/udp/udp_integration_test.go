@@ -17,7 +17,7 @@ import (
 
 const (
 	minPort     = 9100
-	maxPort     = 9900
+	maxPort     = 9200
 	bindAddress = "127.0.0.1"
 )
 
