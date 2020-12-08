@@ -27,6 +27,46 @@ func MakeTestUDPServerWithRandomPort() *UDPServer {
 	return server
 }
 
+func TestWAFRuleViolationCount(t *testing.T) {
+
+	server := MakeTestUDPServerWithRandomPort()
+	defer server.close()
+	go func() {
+		server.serve()
+	}()
+
+	yamlConfig := `
+formats:
+  shared_lb_store:
+    format: storelbwaf,ipaddress={{require .client}} count=1 violations={{len .alerts}}`
+	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
+	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
+	client := makeTestUDPOutput(t, config)
+	defer client.Close()
+
+	batch := outest.NewBatch(
+		beat.Event{
+			Timestamp: time.Now(),
+			Fields: common.MapStr{
+				"type":    "udp",
+				"message": `{"timestamp":1607010460,"method":"GET","uri":"\/","id":"99e8a949270d92d20b09","ngx":{"host":"1.2.3.4","request_uri":"\/","request_id":""},"client":"1.2.3.4","alerts":[{"msg":"No valid Accept header","id":21003},{"msg":"No valid User-Agent header","id":21006},{"match":1,"msg":"Host header contains an IP address","id":21010},{"logdata":6,"match":6,"msg":"Request score greater than score threshold","id":99001}]}`,
+			},
+		})
+	client.Publish(batch)
+
+	// batch is processed async
+	time.Sleep(1 * time.Second)
+	messages := server.getMessages()
+	if len(messages) != 1 {
+		t.Fatalf("should have received one message and instead received %v", len(messages))
+	}
+	expected := `storelbwaf,ipaddress=1.2.3.4 count=1 violations=4`
+	if messages[0] != expected {
+		t.Fatalf("should have received message `%v` and instead received `%v`", expected, messages[0])
+	}
+}
+
+
 func TestManualSetOfExpirationLimitAndEpochTimeEvaluationWithEntryWithinExpirationWindow(t *testing.T) {
 
 	server := MakeTestUDPServerWithRandomPort()

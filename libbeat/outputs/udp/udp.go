@@ -80,15 +80,16 @@ func makeUdpout(
 
 	// build the specific format for transforming log events as payloads to the UDP endpoint
 	funcMap := make(template.FuncMap)
-	funcMap["split"] = split
+	funcMap["split"] = strings.Split
 	funcMap["require"] = require
-	funcMap["pathEscape"] = pathEscape
+	funcMap["pathEscape"] = url.PathEscape
 	funcMap["splitGrab"] = splitGrab
 	funcMap["takeFirst"] = takeFirst
 	funcMap["influxEscape"] = influxEscape
 	funcMap["inputsContain"] = inputsContain
 	funcMap["inputContains"] = inputContains
 	funcMap["exists"] = exists
+	funcMap["join"] = strings.Join
 
 	logger := logp.NewLogger(udp)
 
@@ -344,16 +345,8 @@ func inputsContain(input []string, match string) bool {
 	return false
 }
 
-func split(input, delimiter string) []string {
-	return strings.Split(input, delimiter)
-}
-
 func exists(s string) bool {
 	return len(s) > 0
-}
-
-func pathEscape(s string) string {
-	return url.PathEscape(s)
 }
 
 func splitGrab(input, delimiter string, index int) (string, error) {
