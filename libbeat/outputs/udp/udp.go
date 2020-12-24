@@ -230,12 +230,12 @@ func (out *udpOutput) Publish(
 				format.conditions.Execute(buffer, data)
 				bufferString := buffer.String()
 				conditionsResult, err := strconv.ParseBool(bufferString)
-				if !conditionsResult {
-					out.logger.Debugf("dropping format: '%v' for message: '%v' as it did not pass with a result of: '%v'", format.templateBody, coercedMessage, bufferString)
-					continue
-				}
 				if err != nil {
 					out.logger.Debugf("dropping format: '%v' for message: '%v' as it produced an error: '%v'", format.templateBody, coercedMessage, err)
+					continue
+				}
+				if !conditionsResult {
+					out.logger.Debugf("dropping format: '%v' for message: '%v' as it did not pass with a result of: '%v'", format.templateBody, coercedMessage, bufferString)
 					continue
 				}
 			}
@@ -327,8 +327,8 @@ func require(val string) (string, error) {
 	return val, nil
 }
 
-func inputContains(input string, matchs ...string) bool {
-	for _, match := range matchs {
+func inputContains(input string, matches ...string) bool {
+	for _, match := range matches {
 		if input == match {
 			return true
 		}
