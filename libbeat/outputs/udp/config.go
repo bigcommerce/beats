@@ -30,6 +30,7 @@ type formatConfig struct {
 	Conditions         string `config:"conditions"`
 	Format             string `config:"format" validate:"required"`
 	ProcessURL         string `config:"processURL"`
+	ProcessURLProperty string `config:"processURLProperty"`
 	TimeProperty       string `config:"timeProperty"`
 	TimeFormatUseEpoch bool   `config:"timeFormatUseEpoch"`
 	TimeFormat         string `config:"timeFormat"`

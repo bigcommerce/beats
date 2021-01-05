@@ -61,6 +61,7 @@ type Format struct {
 	template       *template.Template
 	templateBody   string
 	processURL     string
+	processURLProperty string
 	useEpoch       bool
 	timeProperty   string
 	timeFormat     string
@@ -127,6 +128,7 @@ func makeUdpout(
 			template:       template,
 			templateBody:   formatConfig.Format,
 			processURL:     formatConfig.ProcessURL,
+			processURLProperty: formatConfig.ProcessURLProperty,
 			conditions:     conditionsTemplate,
 			conditionsBody: formatConfig.Conditions,
 			useEpoch:       formatConfig.TimeFormatUseEpoch,
@@ -213,16 +215,18 @@ func (out *udpOutput) Publish(
 
 		messages := make([][]byte, 0)
 
-		for formatIndex, format := range out.formats {
+		for _, format := range out.formats {
 
 			// if a property is configured with the name of "process URL", convert it to a proper URL
-			urlParam, urlParamExists := data[format.processURL]
-			if urlParamExists && formatIndex == 0 {
-				url, err := url.Parse(urlParam.(string))
-				if err != nil {
-					out.logger.Debugf("failed to parse URL: %v", urlParam)
+			if len(format.processURL) > 0 && len(format.processURLProperty) > 0 {
+				urlParam, urlParamExists := data[format.processURL]
+				if urlParamExists {
+					url, err := url.Parse(urlParam.(string))
+					if err != nil {
+						out.logger.Debugf("failed to parse URL: %v", urlParam)
+					}
+					data[format.processURLProperty] = url
 				}
-				data[format.processURL] = url
 			}
 
 			if format.conditions != nil {

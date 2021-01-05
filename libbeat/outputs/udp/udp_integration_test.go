@@ -82,8 +82,7 @@ formats:
   shared_lb_store:
     timeProperty: timestamp
     timeFormatUseEpoch: true
-    format: storelbwaf,ipaddress={{require .client}} count=1
-    processURL: request_uri`
+    format: storelbwaf,ipaddress={{require .client}} count=1`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -126,8 +125,7 @@ formats:
   shared_lb_store:
     timeProperty: timestamp
     timeFormatUseEpoch: true
-    format: storelbwaf,ipaddress={{require .client}} count=1
-    processURL: request_uri`
+    format: storelbwaf,ipaddress={{require .client}} count=1`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -167,8 +165,9 @@ formats:
   shared_lb_store:
     timeProperty: timestamp
     timeFormat: 2006_01_02
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
-    processURL: request_uri`
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
+    processURL: request_uri
+    processURLProperty: request_uri_processed`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -209,8 +208,9 @@ expiration_limit: 5m
 formats:
   shared_lb_store:
     timeProperty: timestamp
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
-    processURL: request_uri`
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
+    processURL: request_uri
+    processURLProperty: request_uri_processed`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -251,8 +251,9 @@ expiration_limit: 5m
 formats:
   shared_lb_store:
     timeProperty: timestamp
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
-    processURL: request_uri`
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
+    processURL: request_uri
+    processURLProperty: request_uri_processed`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -292,8 +293,9 @@ skip_expired_entries: true
 formats:
   shared_lb_store:
     timeProperty: timestamp
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ and (eq .upstream "apiproxy") (eq .remote_addr "2.3.4.5") }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -332,8 +334,9 @@ skip_expired_entries: true
 formats:
   shared_lb_store:
     timeProperty: time
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ and (eq .upstream "apiproxy") (eq .remote_addr "2.3.4.5") }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -371,8 +374,9 @@ func TestExpiredEntries(t *testing.T) {
 skip_expired_entries: true
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ and (eq .upstream "apiproxy") (eq .remote_addr "2.3.4.5") }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -410,12 +414,12 @@ func TestDoubleQualifyingCondition(t *testing.T) {
 skip_expired_entries: false
 formats:
   storelb:
-    format: 'storelb,storeid={{require .store_id}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1'
+    format: 'storelb,storeid={{require .store_id}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1'
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ inputsContain .filebeatInputTags "storelb" }}'
   storelbwaf:
     format: 'storelbwaf,uri="{{require (influxEscape .ngx.request_uri)}}",host={{require .ngx.host}},client={{require .client}} count=1'
-    processURL: request_uri
     conditions: '{{ inputsContain .filebeatInputTags "storelbwaf" }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -470,12 +474,14 @@ func TestTagPresenceAndCondition(t *testing.T) {
 skip_expired_entries: false
 formats:
   storelb:
-    format: 'storelb,storeid={{require .store_id}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1'
+    format: 'storelb,storeid={{require .store_id}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1'
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ inputsContain .filebeatInputTags "storelb" }}'
   storelbwaf:
     format: 'storelbwaf,uri="{{require (influxEscape .ngx.request_uri)}}",host={{require .ngx.host}},client={{require .client}} count=1'
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ false }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -526,8 +532,9 @@ func TestComplexConditions(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ and (eq .upstream "apiproxy") (eq .remote_addr "2.3.4.5") }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -566,8 +573,9 @@ func TestMissingRequiredProperty(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .missing_remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .missing_remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ eq .upstream "apiproxy" }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -605,12 +613,14 @@ func TestMultiFormatSortOrderByMapKey(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ eq .upstream "apiproxy" }}'
   shared_lb:
-    format: sharedlb,requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
-    processURL: request_uri`
+    format: sharedlb,requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
+    processURL: request_uri
+    processURLProperty: request_uri_processed`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
@@ -656,8 +666,9 @@ func TestMultiEventsButOnlyOneValidBasedOnCondition(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ eq .upstream "apiproxy" }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -714,8 +725,9 @@ func TestLiteralFalseConditionalYieldingNoResults(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ false }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -767,8 +779,9 @@ func TestLiteralTrueConditionalYieldingNoResults(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
+    processURLProperty: request_uri_processed
     conditions: '{{ true }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
@@ -821,9 +834,10 @@ func TestExcludesUsingConditionals(t *testing.T) {
 skip_expired_entries: false
 formats:
   shared_lb_store:
-    format: sharedlbstore,storehash={{splitGrab .request_uri.Path "/" 2}},requesturi="{{require (influxEscape .request_uri.Path)}}",ipaddress={{require .remote_addr}} count=1
+    format: sharedlbstore,storehash={{splitGrab .request_uri_processed.Path "/" 2}},requesturi="{{require (influxEscape .request_uri_processed.Path)}}",ipaddress={{require .remote_addr}} count=1
     processURL: request_uri
-    conditions: '{{ not (or (inputContains .request_uri.Path "/stores/abcxyz123/v3/catalog/products") (inputContains .remote_addr "2.3.4.5")) }}'`
+    processURLProperty: request_uri_processed
+    conditions: '{{ not (or (inputContains .request_uri_processed.Path "/stores/abcxyz123/v3/catalog/products") (inputContains .remote_addr "2.3.4.5")) }}'`
 
 	testConfig, _ := common.NewConfigWithYAML([]byte(yamlConfig), "test")
 	config, _ := common.MergeConfigs(testConfig, server.getHostAndPortConfig())
